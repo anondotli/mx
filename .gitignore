@@ -1,0 +1,19 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+CLAUDE.md
+
+# Secrets — never commit private key material. Public DKIM keys are also
+# excluded because they're regenerated alongside the private key by the
+# generate-dkim.sh script and have no reason to live in the repo.
+config/dkim/*/private
+config/dkim/*/public
+config/tls/*.pem
+config/tls/*.key
+*.pem
+*.key
+
+# OS junk
+.DS_Store
+Thumbs.db

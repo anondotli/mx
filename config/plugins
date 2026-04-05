@@ -1,0 +1,30 @@
+# == Core Security & Connection ==
+# Blocks bad IPs, handles TLS
+tls
+limit-upstash
+
+# == SPF/DKIM/DMARC Checks (Incoming) ==
+# 'haraka-plugin-mailauth' covers all authentication checks
+mailauth
+
+# == Recipient Validation ==
+# Must come before queue to reject invalid users early
+rcpt_to.bounce
+rcpt_to.anonli
+rcpt_to.reply
+
+# == Data Processing ==
+# Modifies content before queuing
+data.loop_detect
+data.tracking_remove
+data.spam_check
+
+# == Outbound Processing ==
+# ARC seal (must come before DKIM)
+arc.sign
+# Signs the email (Custom DKIM)
+dkim.custom
+
+# == Queue/Delivery ==
+# Handles forwarding logic and final delivery
+queue.forward

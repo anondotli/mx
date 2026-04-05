@@ -1,0 +1,33 @@
+services:
+  haraka:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "25:25"
+      - "587:587"
+    environment:
+      - NODE_ENV=production
+      - MAIL_API_SECRET=${MAIL_API_SECRET}
+      - FRONTEND_URL=${FRONTEND_URL:-http://app:3000}
+      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL}
+      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
+      # Increase Node memory for crypto ops
+      - NODE_OPTIONS=--max-old-space-size=1024
+    volumes:
+      # Mount config overrides if needed
+      - ./config/tls:/etc/haraka/config/tls:ro
+      - haraka-queue:/etc/haraka/queue
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+    healthcheck:
+      test: ["CMD-SHELL", "printf 'EHLO healthcheck\\r\\nQUIT\\r\\n' | nc -w5 localhost 25 | grep -q '250'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  haraka-queue:
