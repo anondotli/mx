@@ -1,5 +1,6 @@
 'use strict';
 
+const { Readable } = require('node:stream');
 const { fetch } = require('undici');
 const Address = require('address-rfc2821').Address;
 const srs = require('../lib/srs');
@@ -7,6 +8,66 @@ const pgpEncrypt = require('../lib/pgp-encrypt');
 const pgpMime = require('../lib/pgp-mime');
 const { retryCall } = require('../lib/security');
 let outbound;
+
+function getRawMessage(txn) {
+    return new Promise((resolve) => {
+        txn.message_stream.get_data((buf) => {
+            resolve(Buffer.isBuffer(buf) ? buf : Buffer.from(buf));
+        });
+    });
+}
+
+function prepareOutboundContents(contents) {
+    if (Buffer.isBuffer(contents)) {
+        return Readable.from([contents]);
+    }
+
+    return contents;
+}
+
+function replaceReplyToHeader(rawMessage, replyTo) {
+    if (!replyTo) return rawMessage;
+
+    const eoh = rawMessage.indexOf('\r\n\r\n');
+    if (eoh === -1) return rawMessage;
+
+    const headerBlock = rawMessage.subarray(0, eoh).toString('utf8');
+    const body = rawMessage.subarray(eoh + 4);
+    const headers = [];
+    let currentHeader = null;
+
+    for (const line of headerBlock.split('\r\n')) {
+        if (/^[ \t]/.test(line)) {
+            if (currentHeader !== null) currentHeader += `\r\n${line}`;
+            continue;
+        }
+
+        if (currentHeader !== null) headers.push(currentHeader);
+        currentHeader = line;
+    }
+
+    if (currentHeader !== null) headers.push(currentHeader);
+
+    const nextHeaders = headers.filter(header => !/^Reply-To:/i.test(header));
+    nextHeaders.push(`Reply-To: ${replyTo}`);
+
+    return Buffer.concat([
+        Buffer.from(`${nextHeaders.join('\r\n')}\r\n\r\n`),
+        body,
+    ]);
+}
+
+function sendEmail(from, to, contents, notes) {
+    return new Promise((resolve, reject) => {
+        outbound.send_email(from, to, prepareOutboundContents(contents), (code, msg) => {
+            if (code === DENY || code === DENYSOFT) {
+                reject(new Error(`send_email failed: ${msg}`));
+            } else {
+                resolve();
+            }
+        }, { notes });
+    });
+}
 
 exports.register = function () {
     outbound = this.haraka_require('outbound');
@@ -69,12 +130,8 @@ exports.process_forward = async function (next, connection) {
 
             // Extract raw message once for PGP/MIME encryption
             let rawMessage;
-            if (pgpRecipients.length > 0) {
-                rawMessage = await new Promise((resolve) => {
-                    txn.message_stream.get_data((buf) => {
-                        resolve(Buffer.isBuffer(buf) ? buf : Buffer.from(buf));
-                    });
-                });
+            if (aliasData.recipients.length > 0) {
+                rawMessage = await getRawMessage(txn);
             }
 
             // Generate reply tokens and send PGP-encrypted copies via send_email
@@ -124,15 +181,7 @@ exports.process_forward = async function (next, connection) {
                     const fullMessage = pgpMime.buildPgpMimeMessage(headers, encryptedArmor);
 
                     // Send via outbound.send_email (creates a fresh transaction)
-                    await new Promise((resolve, reject) => {
-                        outbound.send_email(srsSender, recipient.email, fullMessage, (code, msg) => {
-                            if (code === DENY || code === DENYSOFT) {
-                                reject(new Error(`send_email failed: ${msg}`));
-                            } else {
-                                resolve();
-                            }
-                        }, { notes: { ...txn.notes } });
-                    });
+                    await sendEmail(srsSender, recipient.email, fullMessage, { ...txn.notes });
 
                     plugin.loginfo(`PGP/MIME encrypted and sent to ${recipient.email}`);
                 } catch (pgpErr) {
@@ -173,26 +222,9 @@ exports.process_forward = async function (next, connection) {
                         plugin.logerror(`Reply token failed for ${recipient.email}: ${err.message}`);
                     }
 
-                    // Clone headers with per-recipient Reply-To
-                    if (replyTo) {
-                        txn.remove_header('Reply-To');
-                        txn.add_header('Reply-To', replyTo);
-                    }
-
-                    // Send individually via send_email for recipient isolation
-                    const rawMsg = await new Promise((resolve) => {
-                        txn.message_stream.get_data((buf) => resolve(buf));
-                    });
-
-                    await new Promise((resolve, reject) => {
-                        outbound.send_email(srsSender, recipient.email, rawMsg, (code, msg) => {
-                            if (code === DENY || code === DENYSOFT) {
-                                reject(new Error(`send_email failed: ${msg}`));
-                            } else {
-                                resolve();
-                            }
-                        }, { notes: { ...txn.notes } });
-                    });
+                    // Build a per-recipient copy without mutating the shared transaction.
+                    const rawMsg = replaceReplyToHeader(rawMessage, replyTo);
+                    await sendEmail(srsSender, recipient.email, rawMsg, { ...txn.notes });
 
                     plugin.loginfo(`Plain forwarded to ${recipient.email}`);
                 });
@@ -259,3 +291,6 @@ exports.process_forward = async function (next, connection) {
         next(DENYSOFT, 'Forwarding error');
     }
 };
+
+exports.prepareOutboundContents = prepareOutboundContents;
+exports.replaceReplyToHeader = replaceReplyToHeader;
