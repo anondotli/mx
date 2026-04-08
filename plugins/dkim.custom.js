@@ -10,6 +10,14 @@ const { retryCall } = require('../lib/security');
 const keyCache = new Map();
 const KEY_CACHE_TTL = 3600000;
 
+function getLocalKeyRoot() {
+    return process.env.LOCAL_DKIM_DIR || path.resolve(__dirname, '..', 'config', 'dkim');
+}
+
+function getLocalKeyPath(domain) {
+    return path.resolve(getLocalKeyRoot(), domain, 'private');
+}
+
 // RFC 6376 §3.4.1 — relaxed header canonicalization
 function canonicalizeHeaderRelaxed(name, value) {
     return name.toLowerCase() + ':' +
@@ -124,7 +132,7 @@ exports.get_key = async function(domain) {
 
     // Try local key files first (config/dkim/<domain>/private)
     try {
-        const keyPath = path.resolve(__dirname, '..', 'config', 'dkim', domain, 'private');
+        const keyPath = getLocalKeyPath(domain);
         const privateKey = fs.readFileSync(keyPath, 'utf8');
         const cfg = this.config.get('dkim_sign.ini');
         const selector = cfg[`domain ${domain}`]?.selector || 'default';
@@ -160,3 +168,5 @@ exports.get_key = async function(domain) {
 // Exported for testing
 exports.canonicalizeHeaderRelaxed = canonicalizeHeaderRelaxed;
 exports.canonicalizeBodySimple = canonicalizeBodySimple;
+exports.getLocalKeyRoot = getLocalKeyRoot;
+exports.getLocalKeyPath = getLocalKeyPath;

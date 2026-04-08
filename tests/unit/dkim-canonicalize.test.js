@@ -3,7 +3,9 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
-const { canonicalizeHeaderRelaxed, canonicalizeBodySimple } = require('../../plugins/dkim.custom');
+const path = require('node:path');
+const dkimCustom = require('../../plugins/dkim.custom');
+const { canonicalizeHeaderRelaxed, canonicalizeBodySimple } = dkimCustom;
 
 describe('canonicalizeHeaderRelaxed()', () => {
     it('lowercases the header name', () => {
@@ -73,6 +75,42 @@ describe('canonicalizeBodySimple()', () => {
         const result = canonicalizeBodySimple(binary);
         // Should preserve the 8-bit bytes and add trailing CRLF
         assert.deepEqual(result, Buffer.concat([binary, Buffer.from('\r\n')]));
+    });
+});
+
+describe('getLocalKeyPath()', () => {
+    it('uses LOCAL_DKIM_DIR when configured', () => {
+        const previous = process.env.LOCAL_DKIM_DIR;
+        process.env.LOCAL_DKIM_DIR = '/run/haraka/dkim';
+
+        try {
+            assert.equal(
+                dkimCustom.getLocalKeyPath('anon.li'),
+                path.resolve('/run/haraka/dkim', 'anon.li', 'private')
+            );
+        } finally {
+            if (previous === undefined) {
+                delete process.env.LOCAL_DKIM_DIR;
+            } else {
+                process.env.LOCAL_DKIM_DIR = previous;
+            }
+        }
+    });
+
+    it('falls back to the repository config directory by default', () => {
+        const previous = process.env.LOCAL_DKIM_DIR;
+        delete process.env.LOCAL_DKIM_DIR;
+
+        try {
+            assert.match(
+                dkimCustom.getLocalKeyPath('anon.li'),
+                /config[\\/]dkim[\\/]anon\.li[\\/]private$/
+            );
+        } finally {
+            if (previous !== undefined) {
+                process.env.LOCAL_DKIM_DIR = previous;
+            }
+        }
     });
 });
 

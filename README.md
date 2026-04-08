@@ -51,8 +51,10 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
    ./scripts/generate-dkim.sh reply.anon.li
    ```
    The generated keys stay on the host under `config/dkim/` and are mounted
-   into the container at runtime. They are intentionally not baked into the
-   Docker image.
+   into the container at runtime. On startup, the entrypoint stages them into
+   a private runtime directory owned by the `haraka` user, so host-side `0600`
+   permissions remain safe and ARC/DKIM can still read them. They are
+   intentionally not baked into the Docker image.
 
 3. **Add DNS records** (output from script):
    ```
@@ -85,6 +87,7 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint (rate limiting) | No |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token | No |
 | `DKIM_REQUIRED_DOMAINS` | Space-separated local DKIM domains to warn about at startup | No |
+| `LOCAL_DKIM_DIR` | Internal runtime directory for staged DKIM keys | No |
 
 ### Plugins
 
@@ -149,7 +152,8 @@ docker compose logs -f haraka
 
 Production notes:
 - DKIM private keys and TLS certificates are mounted at runtime; keep them out of the image build context.
-- ARC signing reuses the same key lookup path as DKIM signing: local key first, API fallback second.
+- DKIM host mounts are staged into `LOCAL_DKIM_DIR` on startup so the unprivileged `haraka` process can read them without loosening host file permissions.
+- ARC signing reuses the same key lookup path as DKIM signing: staged local key first, API fallback second.
 - Outbound delivery prefers IPv4 first, which avoids repeated `ENETUNREACH` noise on hosts without IPv6 egress.
 
 Health check endpoint:
