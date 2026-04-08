@@ -154,8 +154,9 @@ Production notes:
 - DKIM private keys and TLS certificates are mounted at runtime; keep them out of the image build context.
 - DKIM host mounts are staged into `LOCAL_DKIM_DIR` on startup so the unprivileged `haraka` process can read them without loosening host file permissions.
 - ARC signing reuses the same key lookup path as DKIM signing: staged local key first, API fallback second.
-- Docker Compose now requests an IPv6-enabled default bridge network. If network creation fails on your host, enable IPv6 in the Docker daemon and restart Docker before bringing the stack up again.
+- Docker Compose requests an IPv6-enabled user-defined bridge network for Haraka.
 - Outbound delivery uses Haraka's default dual-stack behavior, which prefers IPv6 when the container has working IPv6 egress.
+- Docker daemon IPv6 settings in `/etc/docker/daemon.json` are optional for this setup. They are only needed if you want to customize Docker's IPv6 address pools or enable IPv6 on the default `bridge` network.
 
 Health check endpoint:
 ```bash

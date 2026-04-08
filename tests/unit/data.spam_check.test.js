@@ -60,12 +60,13 @@ describe('data.spam_check', () => {
         assert.match(result.msg, /DMARC/i);
     });
 
-    it('flags but delivers DMARC quarantine', () => {
-        let addedHeader = null;
-        const conn = mockConnection({
-            dmarc: { status: { result: 'fail' }, policy: 'quarantine' },
-        });
-        conn.transaction.add_header = (name, val) => { addedHeader = { name, val }; };
+    it('flags but delivers DMARC reject mail for alias traffic', () => {
+        const addedHeaders = [];
+        const conn = mockConnection(
+            { dmarc: { status: { result: 'fail' }, policy: 'reject' } },
+            { alias: { id: 'alias-123' } }
+        );
+        conn.transaction.add_header = (name, val) => { addedHeaders.push({ name, val }); };
 
         let result;
         plugin.spam_check.call(
@@ -74,7 +75,50 @@ describe('data.spam_check', () => {
             conn
         );
         assert.equal(result.code, undefined);
-        assert.equal(addedHeader?.name, 'X-Spam-Flag');
+        assert.deepEqual(addedHeaders, [
+            { name: 'X-Spam-Flag', val: 'YES' },
+            { name: 'X-Spam-Reason', val: 'DMARC fail (policy=reject)' },
+        ]);
+    });
+
+    it('flags but delivers DMARC quarantine', () => {
+        const addedHeaders = [];
+        const conn = mockConnection({
+            dmarc: { status: { result: 'fail' }, policy: 'quarantine' },
+        });
+        conn.transaction.add_header = (name, val) => { addedHeaders.push({ name, val }); };
+
+        let result;
+        plugin.spam_check.call(
+            { loginfo: () => {} },
+            (code, msg) => { result = { code, msg }; },
+            conn
+        );
+        assert.equal(result.code, undefined);
+        assert.deepEqual(addedHeaders, [
+            { name: 'X-Spam-Flag', val: 'YES' },
+            { name: 'X-Spam-Reason', val: 'DMARC fail (policy=quarantine)' },
+        ]);
+    });
+
+    it('still rejects alias traffic that also fails SPF with no DKIM pass', () => {
+        const conn = mockConnection(
+            {
+                dmarc: { status: { result: 'fail' }, policy: 'reject' },
+                spf: { status: { result: 'fail' } },
+                dkim: { results: [{ status: { result: 'fail' } }] },
+            },
+            { alias: { id: 'alias-123' } }
+        );
+
+        let result;
+        plugin.spam_check.call(
+            { loginfo: () => {} },
+            (code, msg) => { result = { code, msg }; },
+            conn
+        );
+        assert.equal(result.code, DENY);
+        assert.match(result.msg, /SPF/i);
     });
 
     it('rejects SPF fail with no DKIM pass', () => {

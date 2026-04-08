@@ -4,6 +4,11 @@ exports.register = function () {
     this.register_hook('data_post', 'spam_check');
 };
 
+function hasPassingDkim(auth) {
+    const dkimResults = auth?.dkim?.results || [];
+    return dkimResults.some(r => r.status?.result === 'pass');
+}
+
 exports.spam_check = function (next, connection) {
     const txn = connection.transaction;
     if (!txn) return next();
@@ -17,21 +22,26 @@ exports.spam_check = function (next, connection) {
 
     // DMARC reject
     if (auth.dmarc?.status?.result === 'fail' && auth.dmarc?.policy === 'reject') {
-        this.loginfo(`DMARC reject: ${txn.mail_from.address()}`);
-        return next(DENY, 'Message failed DMARC policy (reject)');
+        if (txn.notes.alias) {
+            this.loginfo(`DMARC reject on alias, flagging: ${txn.mail_from.address()}`);
+            txn.add_header('X-Spam-Flag', 'YES');
+            txn.add_header('X-Spam-Reason', 'DMARC fail (policy=reject)');
+        } else {
+            this.loginfo(`DMARC reject: ${txn.mail_from.address()}`);
+            return next(DENY, 'Message failed DMARC policy (reject)');
+        }
     }
 
     // DMARC quarantine — flag but deliver
     if (auth.dmarc?.status?.result === 'fail' && auth.dmarc?.policy === 'quarantine') {
         this.loginfo(`DMARC quarantine: ${txn.mail_from.address()}`);
         txn.add_header('X-Spam-Flag', 'YES');
+        txn.add_header('X-Spam-Reason', 'DMARC fail (policy=quarantine)');
     }
 
     // SPF hard fail + no passing DKIM
     if (auth.spf?.status?.result === 'fail') {
-        const dkimResults = auth.dkim?.results || [];
-        const hasDkimPass = dkimResults.some(r => r.status?.result === 'pass');
-        if (!hasDkimPass) {
+        if (!hasPassingDkim(auth)) {
             this.loginfo(`SPF fail + no DKIM pass: ${txn.mail_from.address()}`);
             return next(DENY, 'Message failed SPF with no valid DKIM');
         }
@@ -39,3 +49,5 @@ exports.spam_check = function (next, connection) {
 
     return next();
 };
+
+exports.hasPassingDkim = hasPassingDkim;
