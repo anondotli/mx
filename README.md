@@ -50,6 +50,9 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
    ./scripts/generate-dkim.sh anon.li
    ./scripts/generate-dkim.sh reply.anon.li
    ```
+   The generated keys stay on the host under `config/dkim/` and are mounted
+   into the container at runtime. They are intentionally not baked into the
+   Docker image.
 
 3. **Add DNS records** (output from script):
    ```
@@ -67,6 +70,9 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
    ```bash
    docker compose up -d --build
    ```
+   The container now validates `MAIL_API_SECRET` and the TLS bundle at startup,
+   and warns when local DKIM keys are missing so deliverability issues are
+   visible immediately.
 
 ## Configuration
 
@@ -78,6 +84,7 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 | `FRONTEND_URL` | URL of Next.js API (default: `http://app:3000`) | No |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint (rate limiting) | No |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token | No |
+| `DKIM_REQUIRED_DOMAINS` | Space-separated local DKIM domains to warn about at startup | No |
 
 ### Plugins
 
@@ -139,6 +146,11 @@ Logs are output in JSON format for easy parsing:
 ```bash
 docker compose logs -f haraka
 ```
+
+Production notes:
+- DKIM private keys and TLS certificates are mounted at runtime; keep them out of the image build context.
+- ARC signing reuses the same key lookup path as DKIM signing: local key first, API fallback second.
+- Outbound delivery prefers IPv4 first, which avoids repeated `ENETUNREACH` noise on hosts without IPv6 egress.
 
 Health check endpoint:
 ```bash

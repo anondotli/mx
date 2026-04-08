@@ -1,0 +1,14 @@
+.git
+.gitignore
+.codex
+.env
+.env.local
+.env.*.local
+node_modules
+tests
+CLAUDE.md
+
+# Runtime secrets are mounted into the container instead of baked into images.
+config/dkim/*/private
+config/tls/*.pem
+config/tls/*.key

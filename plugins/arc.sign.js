@@ -1,8 +1,7 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
 const { sealMessage } = require('mailauth');
+const dkimCustom = require('./dkim.custom');
 
 exports.register = function () {
     this.register_hook('pre_send_trans_email', 'seal_message');
@@ -46,28 +45,22 @@ exports.seal_message = async function (next, connection) {
             cv = 'fail';
         }
 
-        // Load DKIM private key for ARC signing (same key as DKIM)
-        const keyPath = path.resolve(__dirname, '..', 'config', 'dkim', 'anon.li', 'private');
-        let privateKey;
-        try {
-            privateKey = fs.readFileSync(keyPath, 'utf8');
-        } catch (_e) {
-            plugin.logwarn(`ARC signing skipped: no DKIM key at ${keyPath}`);
+        // Reuse the DKIM plugin's lookup path: local key first, API fallback second.
+        const keyData = await dkimCustom.get_key.call(plugin, 'anon.li');
+        if (!keyData?.privateKey) {
+            plugin.logwarn('ARC signing skipped: no DKIM key available for anon.li');
             return next();
         }
 
-        const cfg = plugin.config.get('dkim_sign.ini');
-        const selector = cfg['domain anon.li']?.selector || 'default';
-
         // Get raw message for sealing
         const rawMessage = await new Promise((resolve) => {
-            txn.message_stream.get_data((buf) => resolve(buf));
+            txn.message_stream.get_data((buf) => resolve(Buffer.isBuffer(buf) ? buf : Buffer.from(buf)));
         });
 
         const sealHeaders = await sealMessage(rawMessage, {
             signingDomain: 'anon.li',
-            selector,
-            privateKey,
+            selector: keyData.selector || 'default',
+            privateKey: keyData.privateKey,
             authResults,
             algorithm: 'rsa-sha256',
             cv,

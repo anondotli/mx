@@ -14,7 +14,8 @@ services:
       # Increase Node memory for crypto ops
       - NODE_OPTIONS=--max-old-space-size=1024
     volumes:
-      # Mount config overrides if needed
+      # Runtime-managed secrets and queue state
+      - ./config/dkim:/etc/haraka/config/dkim:ro
       - ./config/tls:/etc/haraka/config/tls:ro
       - haraka-queue:/etc/haraka/queue
     deploy:

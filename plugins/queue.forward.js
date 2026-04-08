@@ -3,6 +3,7 @@
 const { Readable } = require('node:stream');
 const { fetch } = require('undici');
 const Address = require('address-rfc2821').Address;
+const addressRfc2822 = require('address-rfc2822');
 const srs = require('../lib/srs');
 const pgpEncrypt = require('../lib/pgp-encrypt');
 const pgpMime = require('../lib/pgp-mime');
@@ -23,6 +24,25 @@ function prepareOutboundContents(contents) {
     }
 
     return contents;
+}
+
+function parseHeaderAddress(value) {
+    if (!value) return null;
+
+    try {
+        const parsed = addressRfc2822.parse(value);
+        const first = Array.isArray(parsed) ? parsed.find(entry => entry?.address) : null;
+        return first?.address || null;
+    } catch (_err) {
+        return null;
+    }
+}
+
+function getOriginalSenderAddress(txn) {
+    return parseHeaderAddress(txn?.header?.get('Reply-To'))
+        || parseHeaderAddress(txn?.header?.get('From'))
+        || txn?.mail_from?.address()
+        || null;
 }
 
 function replaceReplyToHeader(rawMessage, replyTo) {
@@ -57,7 +77,41 @@ function replaceReplyToHeader(rawMessage, replyTo) {
     ]);
 }
 
-function sendEmail(from, to, contents, notes) {
+async function getResponseDetail(res) {
+    try {
+        const text = (await res.text()).replace(/\s+/g, ' ').trim();
+        if (!text) return '';
+        return `: ${text.slice(0, 200)}`;
+    } catch (_err) {
+        return '';
+    }
+}
+
+function requestReplyToken(originalSender, aliasEmail, recipientEmail) {
+    return retryCall(async (signal) => {
+        const res = await fetch(`${process.env.FRONTEND_URL}/api/internal/reply-token`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-secret': process.env.MAIL_API_SECRET,
+            },
+            body: JSON.stringify({
+                originalSender,
+                aliasEmail,
+                recipientEmail,
+            }),
+            signal,
+        });
+
+        if (!res.ok) {
+            throw new Error(`API ${res.status}${await getResponseDetail(res)}`);
+        }
+
+        return res.json();
+    }, { breakerKey: 'reply-token' });
+}
+
+function sendEmail(origin, from, to, contents, notes) {
     return new Promise((resolve, reject) => {
         outbound.send_email(from, to, prepareOutboundContents(contents), (code, msg) => {
             if (code === DENY || code === DENYSOFT) {
@@ -65,7 +119,7 @@ function sendEmail(from, to, contents, notes) {
             } else {
                 resolve();
             }
-        }, { notes });
+        }, { notes, origin });
     });
 }
 
@@ -115,6 +169,7 @@ exports.process_forward = async function (next, connection) {
         if (aliasData) {
             // == FORWARD MODE ==
             const sender = txn.mail_from.address();
+            const originalSender = getOriginalSenderAddress(txn) || sender;
             const aliasEmail = txn.rcpt_to[0].address();
 
             // Rewrite envelope sender using SRS
@@ -140,23 +195,7 @@ exports.process_forward = async function (next, connection) {
                     // Generate per-recipient reply token
                     let replyTo;
                     try {
-                        const tokenData = await retryCall(async (signal) => {
-                            const res = await fetch(`${process.env.FRONTEND_URL}/api/internal/reply-token`, {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                    'x-api-secret': process.env.MAIL_API_SECRET,
-                                },
-                                body: JSON.stringify({
-                                    originalSender: sender,
-                                    aliasEmail,
-                                    recipientEmail: recipient.email,
-                                }),
-                                signal,
-                            });
-                            if (!res.ok) throw new Error(`API ${res.status}`);
-                            return res.json();
-                        }, { breakerKey: 'reply-token' });
+                        const tokenData = await requestReplyToken(originalSender, aliasEmail, recipient.email);
                         if (tokenData?.token) {
                             replyTo = `${tokenData.token}@reply.anon.li`;
                         }
@@ -181,7 +220,7 @@ exports.process_forward = async function (next, connection) {
                     const fullMessage = pgpMime.buildPgpMimeMessage(headers, encryptedArmor);
 
                     // Send via outbound.send_email (creates a fresh transaction)
-                    await sendEmail(srsSender, recipient.email, fullMessage, { ...txn.notes });
+                    await sendEmail(plugin, srsSender, recipient.email, fullMessage, { ...txn.notes });
 
                     plugin.loginfo(`PGP/MIME encrypted and sent to ${recipient.email}`);
                 } catch (pgpErr) {
@@ -198,23 +237,7 @@ exports.process_forward = async function (next, connection) {
                 const plainSends = plainRecipients.map(async (recipient) => {
                     let replyTo;
                     try {
-                        const tokenData = await retryCall(async (signal) => {
-                            const res = await fetch(`${process.env.FRONTEND_URL}/api/internal/reply-token`, {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/json',
-                                    'x-api-secret': process.env.MAIL_API_SECRET,
-                                },
-                                body: JSON.stringify({
-                                    originalSender: sender,
-                                    aliasEmail,
-                                    recipientEmail: recipient.email,
-                                }),
-                                signal,
-                            });
-                            if (!res.ok) throw new Error(`API ${res.status}`);
-                            return res.json();
-                        }, { breakerKey: 'reply-token' });
+                        const tokenData = await requestReplyToken(originalSender, aliasEmail, recipient.email);
                         if (tokenData?.token) {
                             replyTo = `${tokenData.token}@reply.anon.li`;
                         }
@@ -224,7 +247,7 @@ exports.process_forward = async function (next, connection) {
 
                     // Build a per-recipient copy without mutating the shared transaction.
                     const rawMsg = replaceReplyToHeader(rawMessage, replyTo);
-                    await sendEmail(srsSender, recipient.email, rawMsg, { ...txn.notes });
+                    await sendEmail(plugin, srsSender, recipient.email, rawMsg, { ...txn.notes });
 
                     plugin.loginfo(`Plain forwarded to ${recipient.email}`);
                 });
@@ -293,4 +316,5 @@ exports.process_forward = async function (next, connection) {
 };
 
 exports.prepareOutboundContents = prepareOutboundContents;
+exports.getOriginalSenderAddress = getOriginalSenderAddress;
 exports.replaceReplyToHeader = replaceReplyToHeader;

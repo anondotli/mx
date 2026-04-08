@@ -16,6 +16,53 @@ async function readStream(stream) {
 }
 
 describe('queue.forward helpers', () => {
+    it('prefers Reply-To over From when deriving the original sender', () => {
+        const txn = {
+            header: {
+                get(name) {
+                    return {
+                        'Reply-To': 'Human Reply <reply@example.com>',
+                        'From': 'Envelope Mask <bounce@example.net>',
+                    }[name] || null;
+                },
+            },
+            mail_from: { address: () => 'smtp@example.org' },
+        };
+
+        assert.equal(queueForward.getOriginalSenderAddress(txn), 'reply@example.com');
+    });
+
+    it('falls back to From when Reply-To is absent', () => {
+        const txn = {
+            header: {
+                get(name) {
+                    return {
+                        From: 'Visible Sender <from@example.com>',
+                    }[name] || null;
+                },
+            },
+            mail_from: { address: () => 'smtp@example.org' },
+        };
+
+        assert.equal(queueForward.getOriginalSenderAddress(txn), 'from@example.com');
+    });
+
+    it('falls back to the SMTP envelope sender when headers are missing or invalid', () => {
+        const txn = {
+            header: {
+                get(name) {
+                    return {
+                        'Reply-To': 'not a valid address header',
+                        From: '',
+                    }[name] || null;
+                },
+            },
+            mail_from: { address: () => 'smtp@example.org' },
+        };
+
+        assert.equal(queueForward.getOriginalSenderAddress(txn), 'smtp@example.org');
+    });
+
     it('wraps buffer contents as a readable stream for outbound.send_email', async () => {
         const original = Buffer.from('Subject: test\r\n\r\nbody\r\n');
         const prepared = queueForward.prepareOutboundContents(original);
