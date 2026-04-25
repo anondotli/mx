@@ -18,6 +18,7 @@
     "htmlparser2": "^10.1.0",
     "iconv": "^3.0.1",
     "openpgp": "^6.0.0",
+    "pg": "^8.20.0",
     "sanitize-html": "^2.12.1"
   },
   "devDependencies": {

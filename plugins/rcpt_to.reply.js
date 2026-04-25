@@ -1,14 +1,12 @@
 'use strict';
 
-const { fetch } = require('undici');
-const { retryCall } = require('../lib/security');
+const replyToken = require('../lib/reply-token');
 
 exports.register = function () {
     this.register_hook('rcpt', 'check_reply_token');
 };
 
-exports.check_reply_token = async function (next, connection, params) {
-    const plugin = this;
+exports.check_reply_token = function (next, connection, params) {
     const txn = connection.transaction;
     if (!txn) return next();
 
@@ -21,30 +19,14 @@ exports.check_reply_token = async function (next, connection, params) {
     }
 
     const token = email.split('@')[0];
+    const decoded = replyToken.decode(token);
+    if (!decoded) return next(DENY, 'Invalid reply token');
 
-    try {
-        const replyData = await retryCall(async (signal) => {
-            const res = await fetch(
-                `${process.env.FRONTEND_URL}/api/internal/reply-token?token=${encodeURIComponent(token)}`,
-                {
-                    method: 'GET',
-                    headers: { 'x-api-secret': process.env.MAIL_API_SECRET },
-                    signal,
-                }
-            );
-            if (res.status === 404) return null;
-            if (!res.ok) throw new Error(`API ${res.status}`);
-            return res.json();
-        }, { breakerKey: 'reply-token' });
-
-        if (!replyData) return next(DENY, 'Invalid reply token');
-
-        txn.notes.reply = replyData;
-        txn.notes.is_reply = true;
-        return next(OK);
-
-    } catch (err) {
-        plugin.logerror(`Reply check failed: ${err.message}`);
-        return next(DENYSOFT, 'Temporary error');
-    }
+    txn.notes.reply = {
+        originalSender: decoded.originalSender,
+        aliasEmail: decoded.aliasEmail,
+        recipientEmail: decoded.recipientEmail,
+    };
+    txn.notes.is_reply = true;
+    return next(OK);
 };

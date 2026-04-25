@@ -1,10 +1,8 @@
 'use strict';
 
-const { fetch } = require('undici');
 const fs = require('fs');
 const path = require('path');
-// Circuit breaker / retry logic integrated into security lib
-const { retryCall } = require('../lib/security');
+const db = require('../lib/db');
 const redis = require('../lib/upstash');
 
 // In-memory fallback for alias rate limiting
@@ -99,31 +97,10 @@ exports.check_alias = async function (next, connection, params) {
         return next(DENY, 'Only one alias per transaction');
     }
 
-    // API Check
-    const apiSecret = process.env.MAIL_API_SECRET;
-    if (!apiSecret) return next(DENYSOFT, 'Config error');
-
     try {
-        const aliasData = await retryCall(async (signal) => {
-            const res = await fetch(`${process.env.FRONTEND_URL}/api/internal/aliases`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-api-secret': apiSecret
-                },
-                body: JSON.stringify({ email }),
-                signal
-            });
-            // Permanent client errors (unknown/invalid alias) — do NOT retry;
-            // signal upstream via a sentinel so caller emits 550.
-            if (res.status === 404 || res.status === 400) {
-                return { __notFound: true };
-            }
-            if (!res.ok) throw new Error(`API ${res.status}`);
-            return res.json();
-        }, { breakerKey: 'alias-lookup' });
+        const aliasData = await db.lookupAlias(email);
 
-        if (aliasData?.__notFound || !aliasData || !aliasData.active) {
+        if (!aliasData) {
             return next(DENY, 'No such user here');
         }
 

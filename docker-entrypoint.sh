@@ -82,6 +82,7 @@ validate_dkim_runtime_access() {
 }
 
 require_env MAIL_API_SECRET
+require_env DATABASE_URL
 require_file /etc/haraka/config/tls/anon.li.pem "TLS certificate bundle"
 
 mkdir -p /etc/haraka/queue

@@ -222,10 +222,10 @@ Codex's changes are **well-architected, thoroughly tested, and ready for product
 
 **Pre-Deployment:**
 - [ ] Verify `MAIL_API_SECRET` environment variable set securely
+- [ ] Verify `DATABASE_URL` is set and the host is reachable from the container
 - [ ] Ensure DKIM keys exist at `config/dkim/anon.li/private` and `config/dkim/reply.anon.li/private`
 - [ ] Verify TLS certificate at `config/tls/anon.li.pem`
 - [ ] Test DNS records (SPF, DKIM, DMARC) before deployment
-- [ ] Verify `FRONTEND_URL` backend is reachable
 - [ ] If using Upstash, verify Redis credentials set
 
 **Deploy Steps:**

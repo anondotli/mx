@@ -1,13 +1,13 @@
 'use strict';
 
 const { Readable } = require('node:stream');
-const { fetch } = require('undici');
 const Address = require('address-rfc2821').Address;
 const addressRfc2822 = require('address-rfc2822');
 const srs = require('../lib/srs');
 const pgpEncrypt = require('../lib/pgp-encrypt');
 const pgpMime = require('../lib/pgp-mime');
-const { retryCall } = require('../lib/security');
+const db = require('../lib/db');
+const replyToken = require('../lib/reply-token');
 let outbound;
 
 function getRawMessage(txn) {
@@ -75,40 +75,6 @@ function replaceReplyToHeader(rawMessage, replyTo) {
         Buffer.from(`${nextHeaders.join('\r\n')}\r\n\r\n`),
         body,
     ]);
-}
-
-async function getResponseDetail(res) {
-    try {
-        const text = (await res.text()).replace(/\s+/g, ' ').trim();
-        if (!text) return '';
-        return `: ${text.slice(0, 200)}`;
-    } catch (_err) {
-        return '';
-    }
-}
-
-function requestReplyToken(originalSender, aliasEmail, recipientEmail) {
-    return retryCall(async (signal) => {
-        const res = await fetch(`${process.env.FRONTEND_URL}/api/internal/reply-token`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-secret': process.env.MAIL_API_SECRET,
-            },
-            body: JSON.stringify({
-                originalSender,
-                aliasEmail,
-                recipientEmail,
-            }),
-            signal,
-        });
-
-        if (!res.ok) {
-            throw new Error(`API ${res.status}${await getResponseDetail(res)}`);
-        }
-
-        return res.json();
-    }, { breakerKey: 'reply-token' });
 }
 
 function sendEmail(origin, from, to, contents, notes) {
@@ -192,13 +158,11 @@ exports.process_forward = async function (next, connection) {
             // Generate reply tokens and send PGP-encrypted copies via send_email
             const pgpSends = pgpRecipients.map(async (recipient) => {
                 try {
-                    // Generate per-recipient reply token
+                    // Generate per-recipient reply token (in-process AES-GCM, no I/O)
                     let replyTo;
                     try {
-                        const tokenData = await requestReplyToken(originalSender, aliasEmail, recipient.email);
-                        if (tokenData?.token) {
-                            replyTo = `${tokenData.token}@reply.anon.li`;
-                        }
+                        const token = replyToken.create(originalSender, aliasEmail, recipient.email);
+                        replyTo = `${token}@reply.anon.li`;
                     } catch (err) {
                         plugin.logerror(`Reply token failed for ${recipient.email}: ${err.message}`);
                     }
@@ -237,10 +201,8 @@ exports.process_forward = async function (next, connection) {
                 const plainSends = plainRecipients.map(async (recipient) => {
                     let replyTo;
                     try {
-                        const tokenData = await requestReplyToken(originalSender, aliasEmail, recipient.email);
-                        if (tokenData?.token) {
-                            replyTo = `${tokenData.token}@reply.anon.li`;
-                        }
+                        const token = replyToken.create(originalSender, aliasEmail, recipient.email);
+                        replyTo = `${token}@reply.anon.li`;
                     } catch (err) {
                         plugin.logerror(`Reply token failed for ${recipient.email}: ${err.message}`);
                     }
@@ -255,19 +217,9 @@ exports.process_forward = async function (next, connection) {
                 await Promise.all(plainSends);
             }
 
-            // Record stats — fire-and-forget with retry, do not block delivery
-            retryCall(async (signal) => {
-                const res = await fetch(`${process.env.FRONTEND_URL}/api/internal/aliases`, {
-                    method: 'PATCH',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'x-api-secret': process.env.MAIL_API_SECRET,
-                    },
-                    body: JSON.stringify({ aliasId: aliasData.id, forwarded: 1 }),
-                    signal,
-                });
-                if (!res.ok) throw new Error(`Stats ${res.status}`);
-            }, { breakerKey: 'stats' }).catch(err => plugin.logerror(`Stats update failed after retries: ${err.message}`));
+            // Record stats — fire-and-forget, do not block delivery
+            db.incrementAliasStats(aliasData.id, { forwarded: 1 })
+                .catch(err => plugin.logerror(`Stats update failed: ${err.message}`));
 
             // All recipients sent individually via send_email
             plugin.loginfo(`Forwarding ${txn.uuid} (forward)`);

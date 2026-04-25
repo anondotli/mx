@@ -82,8 +82,8 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `MAIL_API_SECRET` | Shared secret for API authentication | Yes |
-| `FRONTEND_URL` | URL of Next.js API (default: `http://app:3000`) | No |
+| `MAIL_API_SECRET` | Shared with the website; used to derive the reply-token AES-256-GCM key | Yes |
+| `DATABASE_URL` | Postgres connection string for the same database the website uses | Yes |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint (rate limiting) | No |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token | No |
 | `DKIM_REQUIRED_DOMAINS` | Space-separated local DKIM domains to warn about at startup | No |
@@ -97,14 +97,14 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 | `limit-upstash` | IP-based rate limiting (Redis + in-memory fallback) |
 | `mailauth` | Inbound SPF / DKIM / DMARC validation |
 | `rcpt_to.bounce` | Validates SRS bounce return-paths |
-| `rcpt_to.anonli` | Validates aliases + per-alias rate limiting |
-| `rcpt_to.reply` | Handles reply token addresses |
+| `rcpt_to.anonli` | Validates aliases (direct Postgres) + per-alias rate limiting |
+| `rcpt_to.reply` | Decodes reply-token addresses (in-process AES-GCM) |
 | `data.loop_detect` | Rejects mail loops |
 | `data.tracking_remove` | Strips tracking pixels / UTM params |
 | `data.spam_check` | Spam scoring |
 | `arc.sign` | ARC sealing for forwarded mail |
-| `dkim.custom` | Per-domain DKIM signing (local keys or API-fetched) |
-| `queue.forward` | Main forwarding (SRS, PGP, reply rewriting) |
+| `dkim.custom` | Per-domain DKIM signing (local keys, falls back to Postgres) |
+| `queue.forward` | Main forwarding (SRS, PGP, reply rewriting, Postgres stats) |
 
 ## DNS Configuration
 

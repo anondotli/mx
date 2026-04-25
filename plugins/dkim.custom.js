@@ -1,10 +1,9 @@
 'use strict';
 
-const { fetch } = require('undici');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { retryCall } = require('../lib/security');
+const db = require('../lib/db');
 
 // Simple in-memory cache for DKIM keys (TTL: 1 hour)
 const keyCache = new Map();
@@ -144,23 +143,11 @@ exports.get_key = async function(domain) {
     }
 
     try {
-        const data = await retryCall(async (signal) => {
-            const res = await fetch(
-                `${process.env.FRONTEND_URL}/api/internal/dkim?domain=${encodeURIComponent(domain)}`,
-                {
-                    headers: { 'x-api-secret': process.env.MAIL_API_SECRET },
-                    signal,
-                }
-            );
-            if (res.status === 404) return null;
-            if (!res.ok) throw new Error(`DKIM API ${res.status}`);
-            return res.json();
-        }, { breakerKey: 'dkim' });
-
+        const data = await db.getDkimKey(domain);
         if (data) keyCache.set(domain, { data, expires: Date.now() + KEY_CACHE_TTL });
         return data;
     } catch (_err) {
-        // Log but don't throw — caller handles null
+        // Caller handles null
         return null;
     }
 };
