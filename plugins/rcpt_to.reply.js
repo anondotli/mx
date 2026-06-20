@@ -6,7 +6,7 @@ exports.register = function () {
     this.register_hook('rcpt', 'check_reply_token');
 };
 
-exports.check_reply_token = function (next, connection, params) {
+exports.check_reply_token = async function (next, connection, params) {
     const txn = connection.transaction;
     if (!txn) return next();
 
@@ -19,7 +19,15 @@ exports.check_reply_token = function (next, connection, params) {
     }
 
     const token = email.split('@')[0];
-    const decoded = replyToken.decode(token);
+    let decoded;
+    try {
+        decoded = await replyToken.decode(token);
+    } catch (err) {
+        // Backing-store (Redis) error — tempfail so the sender retries instead
+        // of permanently losing a valid reply.
+        this.logerror(`Reply token lookup failed: ${err.message}`);
+        return next(DENYSOFT, 'Temporary error, please retry');
+    }
     if (!decoded) return next(DENY, 'Invalid reply token');
 
     txn.notes.reply = {

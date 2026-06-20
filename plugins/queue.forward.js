@@ -214,7 +214,7 @@ exports.process_forward = async function (next, connection) {
                     // Generate per-recipient reply token (in-process AES-GCM, no I/O)
                     let replyTo;
                     try {
-                        const token = replyToken.create(originalSender, aliasEmail, recipient.email);
+                        const token = await replyToken.create(originalSender, aliasEmail, recipient.email);
                         replyTo = `${token}@reply.anon.li`;
                     } catch (err) {
                         plugin.logerror(`Reply token failed for ${recipient.email}: ${err.message}`);
@@ -253,7 +253,7 @@ exports.process_forward = async function (next, connection) {
                 const plainSends = plainRecipients.map(async (recipient) => {
                     let replyTo;
                     try {
-                        const token = replyToken.create(originalSender, aliasEmail, recipient.email);
+                        const token = await replyToken.create(originalSender, aliasEmail, recipient.email);
                         replyTo = `${token}@reply.anon.li`;
                     } catch (err) {
                         plugin.logerror(`Reply token failed for ${recipient.email}: ${err.message}`);
