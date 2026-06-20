@@ -8,7 +8,28 @@ const pgpEncrypt = require('../lib/pgp-encrypt');
 const pgpMime = require('../lib/pgp-mime');
 const db = require('../lib/db');
 const replyToken = require('../lib/reply-token');
+const bounceToken = require('../lib/bounce-token');
 let outbound;
+
+const MAX_LOCAL_PART_OCTETS = 64; // RFC 5321 §4.5.3.1.1
+
+// SRS-rewrite an envelope sender into @anon.li, falling back to a short
+// server-side bounce token when the SRS local-part would exceed the RFC-5321
+// 64-octet limit. SRS encodes the original address into the local-part, so long
+// ESP/VERP bounce senders overflow it and address-rfc2821 throws — DENYSOFTing
+// the entire forward. The returned address is always safe to hand to the Address
+// constructor; over-length senders come back as BNC=<token>@anon.li, which
+// rcpt_to.bounce resolves on the return path. See [[bounce-token]].
+async function buildEnvelopeSender(sender, srsSecret) {
+    const srsSender = srs.rewrite(sender, 'anon.li', srsSecret);
+    const at = srsSender.lastIndexOf('@');
+    const localPart = at === -1 ? srsSender : srsSender.slice(0, at);
+    if (Buffer.byteLength(localPart, 'utf8') <= MAX_LOCAL_PART_OCTETS) {
+        return srsSender;
+    }
+    const token = await bounceToken.create(sender);
+    return `${bounceToken.ADDRESS_PREFIX}${token}@anon.li`;
+}
 
 function getRawMessage(txn) {
     return new Promise((resolve) => {
@@ -184,9 +205,10 @@ exports.process_forward = async function (next, connection) {
             const originalSender = getOriginalSenderAddress(txn) || sender;
             const aliasEmail = txn.rcpt_to[0].address();
 
-            // Rewrite envelope sender using SRS
+            // Rewrite envelope sender using SRS (falls back to a short bounce
+            // token when the SRS address would exceed 64 octets)
             const srsSecret = process.env.MAIL_API_SECRET;
-            const srsSender = srs.rewrite(sender, 'anon.li', srsSecret);
+            const srsSender = await buildEnvelopeSender(sender, srsSecret);
             txn.mail_from = new Address(srsSender);
 
             txn.add_header('X-Anon-Forward', 'true');
@@ -298,7 +320,7 @@ exports.process_forward = async function (next, connection) {
 
             // Rewrite envelope sender using SRS so bounces route back correctly
             const srsSecret = process.env.MAIL_API_SECRET;
-            const srsSender = srs.rewrite(replyData.aliasEmail, 'anon.li', srsSecret);
+            const srsSender = await buildEnvelopeSender(replyData.aliasEmail, srsSecret);
             txn.mail_from = new Address(srsSender);
 
             txn.rcpt_to = [new Address(recipient)];
@@ -328,3 +350,4 @@ exports.replaceHeaderInBlock = replaceHeaderInBlock;
 exports.encodeFromDisplayName = encodeFromDisplayName;
 exports.shouldMungeFrom = shouldMungeFrom;
 exports.buildMungedFrom = buildMungedFrom;
+exports.buildEnvelopeSender = buildEnvelopeSender;

@@ -134,6 +134,38 @@ describe('queue.forward helpers', () => {
     });
 });
 
+describe('queue.forward envelope sender', () => {
+    const { Address } = require('address-rfc2821');
+    const bounceToken = require('../../lib/bounce-token');
+
+    it('SRS-rewrites a normal sender unchanged', async () => {
+        const env = await queueForward.buildEnvelopeSender('alice@example.com', 'secret');
+        assert.match(env, /^SRS0=/);
+        assert.doesNotThrow(() => new Address(env));
+    });
+
+    it('falls back to a short BNC= token when the SRS local-part would exceed 64 octets', async () => {
+        bounceToken._clearLocalStore();
+        const longSender = 'bounces+108370056-3140-6hvyb0xbfo=anon.li@em6623.email.openai.com';
+
+        // The plain SRS form is what currently blows past the limit.
+        const srs = require('../../lib/srs');
+        const plainSrs = srs.rewrite(longSender, 'anon.li', 'secret');
+        assert.ok(Buffer.byteLength(plainSrs.split('@')[0], 'utf8') > 64);
+
+        const env = await queueForward.buildEnvelopeSender(longSender, 'secret');
+        assert.ok(env.startsWith(bounceToken.ADDRESS_PREFIX));
+        assert.ok(Buffer.byteLength(env.split('@')[0], 'utf8') <= 64);
+        // Must be parseable by the constructor that threw on the over-length SRS.
+        assert.doesNotThrow(() => new Address(env));
+
+        // And the token resolves back to the original sender for bounce routing.
+        const token = env.split('@')[0].slice(bounceToken.ADDRESS_PREFIX.length);
+        const decoded = await bounceToken.decode(token);
+        assert.equal(decoded.originalSender, longSender);
+    });
+});
+
 describe('queue.forward From munging', () => {
     const txnWith = (policy, fromHeader) => ({
         notes: { mailauth: { dmarc: { policy } } },

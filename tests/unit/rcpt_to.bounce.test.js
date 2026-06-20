@@ -3,6 +3,7 @@
 const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const srs = require('../../lib/srs');
+const bounceToken = require('../../lib/bounce-token');
 
 const plugin = require('../../plugins/rcpt_to.bounce');
 
@@ -50,6 +51,21 @@ describe('rcpt_to.bounce', () => {
         return { result, conn };
     }
 
+    // Token addresses resolve via an async store lookup, so the callback fires on
+    // a later tick — await the hook's returned promise before asserting.
+    async function callPluginAsync(rcptAddress) {
+        const conn = mockConnection();
+        const params = [{ address: () => rcptAddress }];
+        let result;
+        await plugin.check_bounce.call(
+            { loginfo: () => {}, logerror: () => {} },
+            (code, msg) => { result = { code, msg }; },
+            conn,
+            params
+        );
+        return { result, conn };
+    }
+
     it('passes non-SRS addresses through to next plugin', () => {
         const { result } = callPlugin('user@example.com');
         assert.equal(result.code, undefined);
@@ -82,6 +98,21 @@ describe('rcpt_to.bounce', () => {
         const srsAddr = srs.rewrite('sender@example.com', 'anon.li', TEST_SECRET);
         const { result } = callPlugin(srsAddr);
         assert.equal(result.code, DENYSOFT);
+    });
+
+    it('accepts a valid BNC= bounce token and sets txn.notes.bounce', async () => {
+        bounceToken._clearLocalStore();
+        const longSender = 'bounces+108370056-3140-6hvyb0xbfo=anon.li@em6623.email.openai.com';
+        const token = await bounceToken.create(longSender);
+        const { result, conn } = await callPluginAsync(`${bounceToken.ADDRESS_PREFIX}${token}@anon.li`);
+        assert.equal(result.code, OK);
+        assert.equal(conn.transaction.notes.bounce.originalSender, longSender);
+    });
+
+    it('rejects an unknown/expired bounce token', async () => {
+        bounceToken._clearLocalStore();
+        const { result } = await callPluginAsync(`${bounceToken.ADDRESS_PREFIX}neverIssuedToken@anon.li`);
+        assert.equal(result.code, DENY);
     });
 
     it('passes through when no transaction', () => {
