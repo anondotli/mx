@@ -110,4 +110,76 @@ describe('queue.forward helpers', () => {
 
         assert.equal(queueForward.replaceReplyToHeader(original), original);
     });
+
+    it('replaces a folded From header without orphaning its continuation lines', () => {
+        const original = Buffer.from(
+            'From: A Very Long\r\n' +
+            '\tDisplay Name <real@dropbox.com>\r\n' +
+            'Subject: hi\r\n' +
+            '\r\n' +
+            'body\r\n'
+        );
+
+        const updated = queueForward.replaceFromHeader(original, '"Dropbox via anon.li" <me@anon.li>');
+        const head = updated.subarray(0, updated.indexOf('\r\n\r\n')).toString('utf8');
+
+        assert.match(head, /From: "Dropbox via anon\.li" <me@anon\.li>/);
+        assert.doesNotMatch(head, /real@dropbox\.com|Display Name/);
+        assert.match(head, /Subject: hi/);
+    });
+
+    it('returns the original raw message when no replacement From is provided', () => {
+        const original = Buffer.from('From: sender@example.com\r\n\r\nbody\r\n');
+        assert.equal(queueForward.replaceFromHeader(original), original);
+    });
+});
+
+describe('queue.forward From munging', () => {
+    const txnWith = (policy, fromHeader) => ({
+        notes: { mailauth: { dmarc: { policy } } },
+        header: { get: name => (name === 'From' ? fromHeader : null) },
+    });
+
+    it('munges only when the sender publishes reject or quarantine', () => {
+        assert.equal(queueForward.shouldMungeFrom(txnWith('reject')), true);
+        assert.equal(queueForward.shouldMungeFrom(txnWith('quarantine')), true);
+        assert.equal(queueForward.shouldMungeFrom(txnWith('none')), false);
+        assert.equal(queueForward.shouldMungeFrom({ notes: {} }), false);
+        assert.equal(queueForward.shouldMungeFrom({}), false);
+    });
+
+    it('keeps the sender display name and points the address at the alias', () => {
+        const txn = txnWith('reject', 'Dropbox <no-reply@dropbox.com>');
+        assert.equal(
+            queueForward.buildMungedFrom(txn, 'me@anon.li'),
+            '"Dropbox via anon.li" <me@anon.li>'
+        );
+    });
+
+    it('falls back to a generic display name when From has no phrase', () => {
+        const txn = txnWith('reject', 'no-reply@dropbox.com');
+        assert.equal(
+            queueForward.buildMungedFrom(txn, 'me@anon.li'),
+            '"no-reply@dropbox.com via anon.li" <me@anon.li>'
+        );
+    });
+
+    it('RFC 2047 encodes non-ASCII display names so the header stays 7-bit', () => {
+        const txn = txnWith('reject', '"Naïve Sender" <x@dropbox.com>');
+        const from = queueForward.buildMungedFrom(txn, 'me@anon.li');
+
+        assert.match(from, /^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?= <me@anon\.li>$/);
+        // eslint-disable-next-line no-control-regex
+        assert.match(from, /^[\x00-\x7F]*$/);
+        const b64 = from.match(/\?B\?([^?]+)\?=/)[1];
+        assert.equal(Buffer.from(b64, 'base64').toString('utf8'), 'Naïve Sender via anon.li');
+    });
+
+    it('quotes and escapes special characters in ASCII display names', () => {
+        const txn = txnWith('quarantine', '"Quote \\" Co." <x@dropbox.com>');
+        assert.equal(
+            queueForward.buildMungedFrom(txn, 'me@anon.li'),
+            '"Quote \\" Co. via anon.li" <me@anon.li>'
+        );
+    });
 });

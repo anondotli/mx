@@ -45,36 +45,82 @@ function getOriginalSenderAddress(txn) {
         || null;
 }
 
-function replaceReplyToHeader(rawMessage, replyTo) {
-    if (!replyTo) return rawMessage;
+// Drop every existing instance of headerName (including folded continuation
+// lines) from a CRLF-joined header block, then append a single fresh instance.
+function replaceHeaderInBlock(headerBlock, headerName, headerValue) {
+    const matcher = new RegExp(`^${headerName}:`, 'i');
+    const kept = [];
+    let skipping = false;
 
+    for (const line of headerBlock.split('\r\n')) {
+        if (/^[ \t]/.test(line)) {
+            // Continuation line: keep it only if its parent header was kept.
+            if (!skipping) kept.push(line);
+            continue;
+        }
+        skipping = matcher.test(line);
+        if (!skipping) kept.push(line);
+    }
+
+    kept.push(`${headerName}: ${headerValue}`);
+    return kept.join('\r\n');
+}
+
+function replaceRawHeader(rawMessage, headerName, headerValue) {
     const eoh = rawMessage.indexOf('\r\n\r\n');
     if (eoh === -1) return rawMessage;
 
     const headerBlock = rawMessage.subarray(0, eoh).toString('utf8');
     const body = rawMessage.subarray(eoh + 4);
-    const headers = [];
-    let currentHeader = null;
-
-    for (const line of headerBlock.split('\r\n')) {
-        if (/^[ \t]/.test(line)) {
-            if (currentHeader !== null) currentHeader += `\r\n${line}`;
-            continue;
-        }
-
-        if (currentHeader !== null) headers.push(currentHeader);
-        currentHeader = line;
-    }
-
-    if (currentHeader !== null) headers.push(currentHeader);
-
-    const nextHeaders = headers.filter(header => !/^Reply-To:/i.test(header));
-    nextHeaders.push(`Reply-To: ${replyTo}`);
 
     return Buffer.concat([
-        Buffer.from(`${nextHeaders.join('\r\n')}\r\n\r\n`),
+        Buffer.from(`${replaceHeaderInBlock(headerBlock, headerName, headerValue)}\r\n\r\n`),
         body,
     ]);
+}
+
+function replaceReplyToHeader(rawMessage, replyTo) {
+    if (!replyTo) return rawMessage;
+    return replaceRawHeader(rawMessage, 'Reply-To', replyTo);
+}
+
+function replaceFromHeader(rawMessage, from) {
+    if (!from) return rawMessage;
+    return replaceRawHeader(rawMessage, 'From', from);
+}
+
+// RFC 5322 display-name encoding: a quoted-string for plain ASCII, or an
+// RFC 2047 base64 encoded-word when the name carries non-ASCII bytes.
+function encodeFromDisplayName(name) {
+    if (/^[\x20-\x7E]*$/.test(name)) {
+        return `"${name.replace(/[\\"]/g, '\\$&')}"`;
+    }
+    return `=?UTF-8?B?${Buffer.from(name, 'utf8').toString('base64')}?=`;
+}
+
+// Forwarding breaks the original sender's DMARC: SRS moves the envelope to
+// @anon.li (SPF no longer aligns) and tracking removal rewrites the body
+// (original DKIM no longer validates). Senders that publish p=reject/quarantine
+// therefore bounce at the receiver. Rewrite From onto the alias — a domain we
+// DKIM-sign — so DMARC aligns, keeping the sender's display name. Replies still
+// route through the Reply-To reply token.
+function shouldMungeFrom(txn) {
+    const policy = txn?.notes?.mailauth?.dmarc?.policy;
+    return policy === 'reject' || policy === 'quarantine';
+}
+
+function buildMungedFrom(txn, aliasEmail) {
+    let display = '';
+    try {
+        const parsed = addressRfc2822.parse(txn?.header?.get('From') || '');
+        const first = Array.isArray(parsed) ? parsed.find(entry => entry?.address) : null;
+        display = (first?.phrase || '').trim() || first?.address || '';
+    } catch (_err) {
+        display = '';
+    }
+
+    const phrase = display ? `${display} via anon.li` : 'Anonymous via anon.li';
+    return `${encodeFromDisplayName(phrase)} <${aliasEmail}>`;
 }
 
 function sendEmail(origin, from, to, contents, notes) {
@@ -145,6 +191,13 @@ exports.process_forward = async function (next, connection) {
 
             txn.add_header('X-Anon-Forward', 'true');
 
+            // Rewrite From onto the alias when the sender publishes a strict
+            // DMARC policy, otherwise the forward bounces at the receiver.
+            const mungedFrom = shouldMungeFrom(txn) ? buildMungedFrom(txn, aliasEmail) : null;
+            if (mungedFrom) {
+                plugin.loginfo(`DMARC ${txn.notes.mailauth.dmarc.policy} sender — rewriting From to align with ${aliasEmail}`);
+            }
+
             // Partition recipients into PGP-enabled and plain groups
             const pgpRecipients = aliasData.recipients.filter(r => r.pgpPublicKey);
             const plainRecipients = aliasData.recipients.filter(r => !r.pgpPublicKey);
@@ -174,11 +227,10 @@ exports.process_forward = async function (next, connection) {
                     // Inject Reply-To into transport headers if we have a token
                     let headers = transportHeaders;
                     if (replyTo) {
-                        // Remove any existing Reply-To and add ours
-                        headers = headers.split('\r\n')
-                            .filter(l => !/^Reply-To:/i.test(l))
-                            .join('\r\n');
-                        headers += `\r\nReply-To: ${replyTo}`;
+                        headers = replaceHeaderInBlock(headers, 'Reply-To', replyTo);
+                    }
+                    if (mungedFrom) {
+                        headers = replaceHeaderInBlock(headers, 'From', mungedFrom);
                     }
 
                     const fullMessage = pgpMime.buildPgpMimeMessage(headers, encryptedArmor);
@@ -208,7 +260,8 @@ exports.process_forward = async function (next, connection) {
                     }
 
                     // Build a per-recipient copy without mutating the shared transaction.
-                    const rawMsg = replaceReplyToHeader(rawMessage, replyTo);
+                    let rawMsg = replaceReplyToHeader(rawMessage, replyTo);
+                    if (mungedFrom) rawMsg = replaceFromHeader(rawMsg, mungedFrom);
                     await sendEmail(plugin, srsSender, recipient.email, rawMsg, { ...txn.notes });
 
                     plugin.loginfo(`Plain forwarded to ${recipient.email}`);
@@ -270,3 +323,8 @@ exports.process_forward = async function (next, connection) {
 exports.prepareOutboundContents = prepareOutboundContents;
 exports.getOriginalSenderAddress = getOriginalSenderAddress;
 exports.replaceReplyToHeader = replaceReplyToHeader;
+exports.replaceFromHeader = replaceFromHeader;
+exports.replaceHeaderInBlock = replaceHeaderInBlock;
+exports.encodeFromDisplayName = encodeFromDisplayName;
+exports.shouldMungeFrom = shouldMungeFrom;
+exports.buildMungedFrom = buildMungedFrom;
