@@ -183,15 +183,20 @@ exports.process_forward = async function (next, connection) {
     const aliasData = txn.notes.alias;
     const replyData = txn.notes.reply;
     if (txn.notes.zoho_relay) {
-        txn.notes.zoho_mx = true;
-        const sender = txn.mail_from.address();
-        if (sender) {
-            const srsSecret = process.env.MAIL_API_SECRET;
-            const srsSender = srs.rewrite(sender, 'anon.li', srsSecret);
-            txn.mail_from = new Address(srsSender);
+        try {
+            txn.notes.zoho_mx = true;
+            const sender = txn.mail_from.address();
+            if (sender) {
+                const srsSecret = process.env.MAIL_API_SECRET;
+                const srsSender = await buildEnvelopeSender(sender, srsSecret);
+                txn.mail_from = new Address(srsSender);
+            }
+            plugin.loginfo(`Zoho relay: ${txn.notes.zoho_recipient}`);
+            return outbound.send_trans_email(txn, next);
+        } catch (err) {
+            plugin.logerror(err);
+            return next(DENYSOFT, 'Forwarding error');
         }
-        plugin.loginfo(`Zoho relay: ${txn.notes.zoho_recipient}`);
-        return outbound.send_trans_email(txn, next);
     }
 
     const bounceData = txn.notes.bounce;

@@ -1,9 +1,15 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 
 const queueForward = require('../../plugins/queue.forward');
+
+const OK = 906;
+const DENYSOFT = 903;
+
+globalThis.OK = OK;
+globalThis.DENYSOFT = DENYSOFT;
 
 async function readStream(stream) {
     const chunks = [];
@@ -163,6 +169,98 @@ describe('queue.forward envelope sender', () => {
         const token = env.split('@')[0].slice(bounceToken.ADDRESS_PREFIX.length);
         const decoded = await bounceToken.decode(token);
         assert.equal(decoded.originalSender, longSender);
+    });
+});
+
+describe('queue.forward Zoho relay', () => {
+    const { Address } = require('address-rfc2821');
+    const bounceToken = require('../../lib/bounce-token');
+
+    let originalEnv;
+
+    beforeEach(() => {
+        originalEnv = process.env.MAIL_API_SECRET;
+        process.env.MAIL_API_SECRET = 'secret';
+        bounceToken._clearLocalStore();
+    });
+
+    afterEach(() => {
+        process.env.MAIL_API_SECRET = originalEnv;
+    });
+
+    function registerWithOutbound(outbound) {
+        queueForward.register.call({
+            haraka_require(name) {
+                assert.equal(name, 'outbound');
+                return outbound;
+            },
+            register_hook() {},
+        });
+    }
+
+    it('uses a short bounce token for long ESP senders before relaying to Zoho', async () => {
+        const sender = 'bounces+10329420-d952-hi=anon.li@em2372.brandfetch.co';
+        let relayedTxn;
+
+        registerWithOutbound({
+            send_trans_email(txn, next) {
+                relayedTxn = txn;
+                next(OK);
+            },
+        });
+
+        const txn = {
+            notes: {
+                zoho_relay: true,
+                zoho_recipient: 'hi@anon.li',
+            },
+            mail_from: { address: () => sender },
+        };
+
+        let result;
+        await queueForward.process_forward.call(
+            { loginfo() {}, logerror() {} },
+            (code, msg) => { result = { code, msg }; },
+            { transaction: txn }
+        );
+
+        assert.equal(result.code, OK);
+        assert.equal(relayedTxn.notes.zoho_mx, true);
+
+        const env = relayedTxn.mail_from.address();
+        assert.ok(env.startsWith(bounceToken.ADDRESS_PREFIX));
+        assert.ok(Buffer.byteLength(env.split('@')[0], 'utf8') <= 64);
+        assert.doesNotThrow(() => new Address(env));
+
+        const token = env.split('@')[0].slice(bounceToken.ADDRESS_PREFIX.length);
+        const decoded = await bounceToken.decode(token);
+        assert.equal(decoded.originalSender, sender);
+    });
+
+    it('DENYSOFTs Zoho relay errors instead of throwing out of the hook', async () => {
+        registerWithOutbound({
+            send_trans_email() {
+                throw new Error('should not relay without a valid envelope sender');
+            },
+        });
+
+        const txn = {
+            notes: {
+                zoho_relay: true,
+                zoho_recipient: 'hi@anon.li',
+            },
+            mail_from: { address: () => 'not-an-address' },
+        };
+
+        let result;
+        await assert.doesNotReject(queueForward.process_forward.call(
+            { loginfo() {}, logerror() {} },
+            (code, msg) => { result = { code, msg }; },
+            { transaction: txn }
+        ));
+
+        assert.equal(result.code, DENYSOFT);
+        assert.equal(result.msg, 'Forwarding error');
     });
 });
 
