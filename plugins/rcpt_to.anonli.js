@@ -3,28 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const db = require('../lib/db');
-const redis = require('../lib/upstash');
-
-// In-memory fallback for alias rate limiting
-const aliasLocalCounts = new Map();
-
-function cleanupAliasLocalCounts(windowMs) {
-    const now = Date.now();
-    for (const [key, entry] of aliasLocalCounts) {
-        if (now - entry.start > windowMs) aliasLocalCounts.delete(key);
-    }
-}
-
-function checkAliasLocalLimit(email, windowMs, maxCount) {
-    const now = Date.now();
-    const entry = aliasLocalCounts.get(email);
-    if (!entry || now - entry.start > windowMs) {
-        aliasLocalCounts.set(email, { count: 1, start: now });
-        return false;
-    }
-    entry.count++;
-    return entry.count > maxCount;
-}
+const rcptPolicy = require('../lib/rcpt-policy');
+const { createRateLimiter } = require('../lib/rate-limit');
+const { OWN_DOMAIN, REPLY_DOMAIN } = require('../lib/constants');
+const { splitAddress } = require('../lib/address');
 
 let reservedAliases = new Set();
 
@@ -32,18 +14,14 @@ exports.register = function () {
     const plugin = this;
     this.register_hook('rcpt', 'check_alias');
 
-    // Load alias rate limit config
-    const cfg = plugin.config.get('limit.ini') || {};
-    const main = cfg?.main || {};
-    plugin.aliasRateWindow = parseInt(main.alias_rate_limit_window, 10) || 300;
-    plugin.aliasRateCount = parseInt(main.alias_rate_limit_count, 10) || 50;
+    // Messages per alias (limit.ini: alias_rate_limit_window seconds, alias_rate_limit_count)
+    const main = plugin.config.get('limit.ini')?.main || {};
+    plugin.aliasLimiter = createRateLimiter({
+        keyPrefix: 'alias_rate:',
+        windowSeconds: parseInt(main.alias_rate_limit_window, 10) || 300,
+        maxCount: parseInt(main.alias_rate_limit_count, 10) || 50,
+    });
 
-    // Periodically clean up expired alias rate-limit entries
-    plugin._aliasCleanupTimer = setInterval(
-        () => cleanupAliasLocalCounts(plugin.aliasRateWindow * 1000),
-        plugin.aliasRateWindow * 1000
-    );
-    plugin._aliasCleanupTimer.unref();
     try {
         const configPath = path.resolve(__dirname, '..', 'config', 'reserved_aliases.json');
         const list = JSON.parse(fs.readFileSync(configPath, 'utf8'));
@@ -55,7 +33,7 @@ exports.register = function () {
 };
 
 exports.shutdown = function () {
-    if (this._aliasCleanupTimer) clearInterval(this._aliasCleanupTimer);
+    this.aliasLimiter?.stop();
 };
 
 exports.check_alias = async function (next, connection, params) {
@@ -64,37 +42,23 @@ exports.check_alias = async function (next, connection, params) {
     if (!txn) return next();
 
     const rcpt = params[0];
-    if (!rcpt.address()) return next(DENY, 'Invalid address');
+    if (!rcpt?.address()) return next(DENY, 'Invalid address');
 
     const email = rcpt.address().toLowerCase();
 
     // Ignore replies (handled by other plugin)
-    if (email.endsWith('@reply.anon.li')) return next();
+    if (email.endsWith(`@${REPLY_DOMAIN}`)) return next();
 
-    // Reject mixed-mode transactions (alias + reply/bounce in same SMTP session)
-    if (txn.notes.reply || txn.notes.bounce) {
-        return next(DENY, 'Mixed recipient types not allowed');
-    }
+    // One recipient per transaction (lib/rcpt-policy.js)
+    if (rcptPolicy.answered(next, txn, email)) return;
 
-    const [localPart, domain] = email.split('@');
-    if (domain === 'anon.li' && reservedAliases.has(localPart)) {
-        // Only one Zoho relay per transaction
-        if (txn.notes.zoho_relay && txn.notes.zoho_recipient !== email) {
-            return next(DENY, 'Only one recipient per transaction');
-        }
+    const { local: localPart, domain } = splitAddress(email) || {};
+    if (domain === OWN_DOMAIN && reservedAliases.has(localPart)) {
         txn.notes.zoho_relay = true;
         txn.notes.zoho_recipient = email;
+        rcptPolicy.accept(txn, email);
         plugin.loginfo(`Reserved alias ${email} → Zoho relay`);
         return next(OK);
-    }
-    
-    if (txn.notes.zoho_relay) {
-        return next(DENY, 'Mixed recipient types not allowed');
-    }
-
-    // Reject if a different alias is already set in this transaction
-    if (txn.notes.alias) {
-        return next(DENY, 'Only one alias per transaction');
     }
 
     try {
@@ -105,32 +69,17 @@ exports.check_alias = async function (next, connection, params) {
         }
 
         // Per-alias rate limiting
-        try {
-            let limited = false;
-            if (redis) {
-                const pipeline = redis.pipeline();
-                pipeline.incr(`alias_rate:${email}`);
-                pipeline.expire(`alias_rate:${email}`, plugin.aliasRateWindow, 'NX');
-                const results = await pipeline.exec();
-                const count = results[0];
-                limited = count > plugin.aliasRateCount;
-            } else {
-                limited = checkAliasLocalLimit(email, plugin.aliasRateWindow * 1000, plugin.aliasRateCount);
-            }
-
-            if (limited) {
-                plugin.loginfo(`Alias rate limit exceeded for ${email}`);
-                return next(DENYSOFT, 'Too many messages to this address');
-            }
-        } catch (err) {
+        const limited = await plugin.aliasLimiter.hit(email, (err) => {
             plugin.logerror(`Alias rate limit error: ${err.message} — using local fallback`);
-            if (checkAliasLocalLimit(email, plugin.aliasRateWindow * 1000, plugin.aliasRateCount)) {
-                return next(DENYSOFT, 'Too many messages to this address');
-            }
+        });
+        if (limited) {
+            plugin.loginfo(`Alias rate limit exceeded for ${email}`);
+            return next(DENYSOFT, 'Too many messages to this address');
         }
 
         // Store for queue plugin
         txn.notes.alias = aliasData;
+        rcptPolicy.accept(txn, email);
         return next(OK);
 
     } catch (err) {

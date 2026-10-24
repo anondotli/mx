@@ -14,9 +14,9 @@ rcpt_to.anonli
 rcpt_to.reply
 
 # == Data Processing ==
-# Modifies content before queuing
+# Inspects content before queuing (tracking removal happens per forwarded copy
+# in queue.forward, so authentication is verified on the original message)
 data.loop_detect
-data.tracking_remove
 data.spam_check
 
 # == Outbound Processing ==

@@ -130,3 +130,20 @@ describe('pgp-mime buildPgpMimeMessage', () => {
         assert.ok(!fakeArmor.includes(match[1]), 'boundary does not collide with armor');
     });
 });
+
+describe('extractMimeEntity header placement', () => {
+    const { extractMimeEntity } = require('../../lib/pgp-mime');
+
+    it('keeps envelope headers outside and encrypts every other header', () => {
+        const raw = Buffer.from(
+            'From: a@b.com\r\nSubject: s\r\nOrganization: ACME\r\nUser-Agent: Mailer 1.0\r\n' +
+            'MIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n'
+        );
+        const { transportHeaders, mimeEntity } = extractMimeEntity(raw);
+        assert.equal(transportHeaders, 'From: a@b.com\r\nSubject: s');
+        assert.equal(
+            mimeEntity.toString(),
+            'Organization: ACME\r\nUser-Agent: Mailer 1.0\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nbody\r\n'
+        );
+    });
+});

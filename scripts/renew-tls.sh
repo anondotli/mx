@@ -15,8 +15,11 @@ if [ ! -d "$CERT_DIR" ]; then
 fi
 
 # Combine private key + fullchain into single PEM (Haraka expects this format)
-cat "$CERT_DIR/privkey.pem" "$CERT_DIR/fullchain.pem" > "$HARAKA_TLS_DIR/anon.li.pem"
-chmod 644 "$HARAKA_TLS_DIR/anon.li.pem"
+# The bundle contains the private key: keep it owner-only. The container's
+# entrypoint stages a copy readable by the haraka user.
+(umask 077 && cat "$CERT_DIR/privkey.pem" "$CERT_DIR/fullchain.pem" > "$HARAKA_TLS_DIR/anon.li.pem.tmp")
+chmod 600 "$HARAKA_TLS_DIR/anon.li.pem.tmp"
+mv "$HARAKA_TLS_DIR/anon.li.pem.tmp" "$HARAKA_TLS_DIR/anon.li.pem"
 
 echo "TLS certificate updated at $HARAKA_TLS_DIR/anon.li.pem"
 

@@ -19,6 +19,11 @@ describe('SRS rewrite()', () => {
         assert.ok(result.endsWith('@anon.li'));
     });
 
+    it('refuses a null or empty sender', () => {
+        assert.throws(() => srs.rewrite(null, OWN_DOMAIN, SECRET), /Invalid sender/);
+        assert.throws(() => srs.rewrite('  ', OWN_DOMAIN, SECRET), /Invalid sender/);
+    });
+
     it('detects existing SRS0 address and delegates to rewriteSRS1', () => {
         const srs0 = srs.rewrite('user@example.com', OWN_DOMAIN, SECRET);
         const result = srs.rewrite(srs0, OWN_DOMAIN, SECRET);
@@ -102,6 +107,22 @@ describe('SRS1 reverse()', () => {
         const tampered = srs1.replace(/^SRS1=[A-Za-z0-9_-]{4}=/i, 'SRS1=XXXX=');
         const result = srs.reverse(tampered, SECRET);
         assert.equal(result.valid, false);
+    });
+
+    it('routes an SRS1 bounce back to the forwarder that minted the inner SRS0', () => {
+        // Another forwarder SRS'd the sender with its own secret; we wrapped it.
+        const theirs = srs.rewrite('user@example.com', 'forwarder.example', 'their-secret');
+        const ours = srs.rewrite(theirs, OWN_DOMAIN, SECRET);
+        assert.match(ours, /^SRS1=/);
+
+        const result = srs.reverse(ours, SECRET);
+        assert.equal(result.valid, true);
+        assert.equal(result.originalSender, theirs);
+    });
+
+    it('accepts a lowercased hash (case-insensitive comparison)', () => {
+        const addr = srs.rewrite('user@example.com', OWN_DOMAIN, SECRET);
+        assert.equal(srs.reverse(addr.toLowerCase(), SECRET).valid, true);
     });
 
     it('rejects SRS1 with wrong secret', () => {

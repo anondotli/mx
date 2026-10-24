@@ -1,7 +1,9 @@
 'use strict';
 
 const { sealMessage } = require('mailauth');
-const dkimCustom = require('./dkim.custom');
+const dkimKeys = require('../lib/dkim-keys');
+const { readRawMessage } = require('../lib/raw-message');
+const { OWN_DOMAIN } = require('../lib/constants');
 
 exports.register = function () {
     this.register_hook('pre_send_trans_email', 'seal_message');
@@ -12,8 +14,8 @@ exports.seal_message = async function (next, connection) {
     const txn = connection.transaction;
     if (!txn) return next();
 
-    // Only ARC-sign forwarded mail
-    if (!txn.notes.alias && !txn.notes.zoho_relay) return next();
+    // Only ARC-sign forwarded mail (alias forward copies and Zoho relays)
+    if (!txn.notes.forward && !txn.notes.zoho_relay) return next();
 
     try {
         const auth = txn.notes.mailauth;
@@ -45,20 +47,15 @@ exports.seal_message = async function (next, connection) {
             cv = 'fail';
         }
 
-        // Reuse the DKIM plugin's lookup path: local key first, API fallback second.
-        const keyData = await dkimCustom.get_key.call(plugin, 'anon.li');
+        // Same keys as DKIM signing: local key first, database fallback second.
+        const keyData = await dkimKeys.getKey(OWN_DOMAIN, plugin.config, (msg) => plugin.logerror(msg));
         if (!keyData?.privateKey) {
-            plugin.logwarn('ARC signing skipped: no DKIM key available for anon.li');
+            plugin.logwarn(`ARC signing skipped: no DKIM key available for ${OWN_DOMAIN}`);
             return next();
         }
 
-        // Get raw message for sealing
-        const rawMessage = await new Promise((resolve) => {
-            txn.message_stream.get_data((buf) => resolve(Buffer.isBuffer(buf) ? buf : Buffer.from(buf)));
-        });
-
-        const sealHeaders = await sealMessage(rawMessage, {
-            signingDomain: 'anon.li',
+        const sealHeaders = await sealMessage(await readRawMessage(txn), {
+            signingDomain: OWN_DOMAIN,
             selector: keyData.selector || 'default',
             privateKey: keyData.privateKey,
             authResults,

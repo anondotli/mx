@@ -1,31 +1,33 @@
 # anon.li Email Server
 
-A production-ready, secure, and privacy-focused Haraka email server for handling anonymous email forwarding.
+A secure, privacy-focused Haraka email server for anonymous email forwarding.
 
 ## Features
 
-- **Anonymous Forwarding**: Accepts emails for `@anon.li` aliases and custom domains, forwarding them to real recipients
-- **Reply System**: Handles replies via `@reply.anon.li` tokenized addresses to hide user identities
-- **PGP Encryption**: Automatically encrypts forwarded emails if the recipient has uploaded a public key
-- **Privacy Protection**: Removes tracking pixels, cleans HTML, and sanitizes dangerous content
-- **SRS Support**: Implements Sender Rewriting Scheme to maintain SPF compliance when forwarding
-- **DKIM Signing**: Signs all outbound mail to ensure deliverability
-- **Rate Limiting**: Redis-backed rate limiting to prevent abuse
+- **Anonymous Forwarding**: Accepts emails for `@anon.li` aliases and verified custom domains (including catch-all), forwarding them to the alias owner's verified recipients
+- **Reply System**: Replies via `@reply.anon.li` tokenized addresses; only an allowlist of headers is passed on, so the user's address, IP and mail client never reach the correspondent
+- **PGP Encryption**: Forwards PGP/MIME-encrypted copies to recipients who uploaded a public key
+- **Privacy Protection**: Removes tracking pixels and tracking link parameters from forwarded copies; bounces that would reveal the recipient's real address are never passed back to the sender
+- **SRS Support**: Implements the Sender Rewriting Scheme to keep SPF passing when forwarding
+- **DKIM / ARC Signing**: Signs all outbound mail (custom domains with their own key) and ARC-seals forwarded mail
+- **Rate Limiting**: Redis-backed rate limiting per connecting IP and per alias
 - **Custom Domains**: Supports user-verified custom domains with per-domain DKIM keys
 
 ## Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  External       │     │    Haraka       │     │   Next.js API   │
-│  Sender         │────▶│    MTA          │────▶│   (Prisma)      │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                               │                        │
-                               ▼                        ▼
-                        ┌─────────────────┐     ┌─────────────────┐
-                        │    Redis        │     │   PostgreSQL    │
-                        │  (Rate Limit)   │     │   (Aliases)     │
-                        └─────────────────┘     └─────────────────┘
+│  External       │     │    Haraka       │     │   PostgreSQL    │
+│  Sender         │────▶│    MTA          │────▶│ (website's DB:  │
+└─────────────────┘     └─────────────────┘     │  aliases, ...)  │
+                               │                └─────────────────┘
+                               ▼
+                        ┌─────────────────┐
+                        │  Upstash Redis  │
+                        │ (rate limits,   │
+                        │  reply/bounce   │
+                        │  tokens)        │
+                        └─────────────────┘
 ```
 
 ## Installation
@@ -33,16 +35,16 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 ### Prerequisites
 
 - Docker and Docker Compose
-- Node.js 20+ (for local development)
-- Redis
-- Access to the Next.js frontend API
+- Node.js 24+ (for local development)
+- Access to the website's PostgreSQL database
+- Upstash Redis (recommended; in-memory fallback is not persistent)
 
 ### Quick Start
 
 1. **Clone and configure**:
    ```bash
    cp .env.example .env
-   # Edit .env with your MAIL_API_SECRET
+   # Set MAIL_API_SECRET, DATABASE_URL, DKIM_ENCRYPTION_KEY and the Upstash credentials
    ```
 
 2. **Generate DKIM keys**:
@@ -50,11 +52,10 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
    ./scripts/generate-dkim.sh anon.li
    ./scripts/generate-dkim.sh reply.anon.li
    ```
-   The generated keys stay on the host under `config/dkim/` and are mounted
-   into the container at runtime. On startup, the entrypoint stages them into
-   a private runtime directory owned by the `haraka` user, so host-side `0600`
-   permissions remain safe and ARC/DKIM can still read them. They are
-   intentionally not baked into the Docker image.
+   The generated keys stay on the host under `config/dkim/` (private keys
+   `0600`) and are mounted into the container at runtime. On startup, the
+   entrypoint stages them into a private runtime directory owned by the
+   `haraka` user. They are intentionally not baked into the Docker image.
 
 3. **Add DNS records** (output from script):
    ```
@@ -64,17 +65,19 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 
 4. **Place TLS certificates**:
    ```bash
-   # Place your Let's Encrypt or other TLS certs
-   cat privkey.pem cert.pem chain.pem > config/tls/anon.li.pem
+   (umask 077 && cat privkey.pem fullchain.pem > config/tls/anon.li.pem)
    ```
+   `scripts/renew-tls.sh` does this as a certbot post-renewal hook. Like the
+   DKIM keys, the bundle is staged into a `haraka`-owned copy at startup, so
+   the host file stays owner-only.
 
 5. **Start the server**:
    ```bash
    docker compose up -d --build
    ```
-   The container now validates `MAIL_API_SECRET` and the TLS bundle at startup,
-   and warns when local DKIM keys are missing so deliverability issues are
-   visible immediately.
+   The container validates `MAIL_API_SECRET`, `DATABASE_URL`,
+   `DKIM_ENCRYPTION_KEY` and the TLS bundle at startup, and warns when local
+   DKIM keys are missing so deliverability issues are visible immediately.
 
 ## Configuration
 
@@ -82,29 +85,62 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `MAIL_API_SECRET` | Shared with the website; used to derive the reply-token AES-256-GCM key | Yes |
+| `MAIL_API_SECRET` | Signs SRS return paths; keep it stable | Yes |
 | `DATABASE_URL` | Postgres connection string for the same database the website uses | Yes |
-| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint (rate limiting) | No |
-| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token | No |
-| `DKIM_REQUIRED_DOMAINS` | Space-separated local DKIM domains to warn about at startup | No |
+| `DKIM_ENCRYPTION_KEY` | The website's key (64 hex chars) for decrypting custom-domain DKIM keys | Yes |
+| `UPSTASH_REDIS_REST_URL` | Upstash Redis REST endpoint | Recommended |
+| `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis auth token | Recommended |
+| `DKIM_REQUIRED_DOMAINS` | Space-separated local DKIM domains to stage/warn about at startup | No |
 | `LOCAL_DKIM_DIR` | Internal runtime directory for staged DKIM keys | No |
+
+Without Redis, reply tokens, bounce tokens, the reply Message-ID map and rate
+limits live in memory and are lost on restart (replies to mail forwarded before
+a restart are rejected).
 
 ### Plugins
 
 | Plugin | Purpose |
 |--------|---------|
-| `tls` | STARTTLS enforcement |
-| `limit-upstash` | IP-based rate limiting (Redis + in-memory fallback) |
-| `mailauth` | Inbound SPF / DKIM / DMARC validation |
-| `rcpt_to.bounce` | Validates SRS bounce return-paths |
-| `rcpt_to.anonli` | Validates aliases (direct Postgres) + per-alias rate limiting |
-| `rcpt_to.reply` | Decodes reply-token addresses (in-process AES-GCM) |
+| `tls` | STARTTLS (TLS 1.2+) |
+| `limit-upstash` | Per-IP connection rate limiting (Redis + in-memory fallback) |
+| `mailauth` | Inbound SPF / DKIM / ARC / DMARC validation |
+| `rcpt_to.bounce` | Validates SRS and `BNC=` return paths |
+| `rcpt_to.anonli` | Validates aliases and catch-all (direct Postgres) + per-alias rate limiting |
+| `rcpt_to.reply` | Resolves reply-token addresses (Redis) and checks the alias may still send |
 | `data.loop_detect` | Rejects mail loops |
-| `data.tracking_remove` | Strips tracking pixels / UTM params |
-| `data.spam_check` | Spam scoring |
+| `data.spam_check` | DMARC/SPF policy enforcement |
 | `arc.sign` | ARC sealing for forwarded mail |
-| `dkim.custom` | Per-domain DKIM signing (local keys, falls back to Postgres) |
-| `queue.forward` | Main forwarding (SRS, PGP, reply rewriting, Postgres stats) |
+| `dkim.custom` | DKIM signing (local keys; custom-domain keys from Postgres) |
+| `queue.forward` | Forwarding (SRS, tracking removal, PGP, reply rewriting, bounce privacy, stats) |
+
+### Mail flows
+
+- **Forward** (`alias@anon.li` / custom domain): one copy per verified
+  recipient, each with its own `Reply-To` reply token, SRS envelope, tracking
+  removed and optionally PGP-encrypted. Read-receipt and followup headers
+  (`Disposition-Notification-To`, `Mail-Followup-To`, ...) are removed so the
+  recipient's client never answers the sender directly. Senders publishing a
+  strict DMARC policy get `From` rewritten to `"Name via anon.li" <alias>`.
+- **Reply** (`<token>@reply.anon.li`): accepted only from one of the alias
+  owner's verified recipient addresses, authenticated by SPF/DKIM (envelope)
+  or DMARC (`From`), and sent to the original correspondent as the alias. Only content and threading headers (`Subject`, `In-Reply-To`,
+  `References`, `Content-*`, ...) are kept; `Received`, `Sender`, `Reply-To`,
+  read-receipt requests, client IPs and the original `Date` are dropped. The
+  `Message-ID` is replaced by one derived from it, and the IDs of earlier
+  replies are rewritten in later threading headers (and mapped back on mail to
+  the same alias, so threading keeps working).
+- **Bounces**: a failed forward is never reported back to the original sender
+  (the bounce would name the recipient's real address). Bounced replies are
+  delivered to the alias owner.
+- **Reserved addresses** (`config/reserved_aliases.json`, e.g. `hi@anon.li`)
+  are relayed to the team mailbox at Zoho.
+- **Mail for a domain whose MX is this server** (a reply to another anon.li
+  alias, a bounced reply) is handed back to the local listener instead of being
+  skipped by outbound's loop protection.
+
+A message is accepted for one alias (or reply token / return path) per SMTP
+transaction; additional recipients get `452 4.5.3` and are retried by the
+sending server in a separate transaction.
 
 ## DNS Configuration
 
@@ -114,37 +150,36 @@ A production-ready, secure, and privacy-focused Haraka email server for handling
 ; MX Record
 anon.li.                IN MX   10 mx.anon.li.
 
-; SPF
-anon.li.                IN TXT  "v=spf1 mx a:mx.anon.li -all"
+; SPF (mx.anon.li must be authorized)
+anon.li.                IN TXT  "v=spf1 mx ~all"
 
 ; DKIM (generated by script)
 default._domainkey.anon.li. IN TXT "v=DKIM1; k=rsa; p=..."
 
 ; DMARC
-_dmarc.anon.li.         IN TXT  "v=DMARC1; p=quarantine; rua=mailto:dmarc@anon.li"
+_dmarc.anon.li.         IN TXT  "v=DMARC1; p=quarantine"
 ```
 
 ### For Custom Domains
 
-Users must add:
+Users must add (verified by the website):
 1. MX record pointing to `mx.anon.li`
-2. SPF record including `include:_spf.anon.li`
+2. SPF record including `include:anon.li`
 3. DKIM record (provided in dashboard)
 4. Verification TXT record
 
 ## Security Features
 
-- **TLS 1.2+** required for all connections
-- **Timing-safe** API secret comparison
+- **STARTTLS** with TLS 1.2+
+- **Constant-time** SRS hash comparison
 - **Input validation** on all email addresses
-- **Rate limiting** per IP and globally
-- **DKIM/SPF/DMARC** for email authentication
+- **Rate limiting** per connecting IP and per alias
+- **Message size limit** of 25 MiB
+- **DKIM/SPF/DMARC/ARC** for email authentication
 - **PGP encryption** for enhanced privacy
 - **Tracking removal** for privacy protection
 
 ## Monitoring
-
-Logs are output in JSON format for easy parsing:
 
 ```bash
 docker compose logs -f haraka
@@ -152,13 +187,13 @@ docker compose logs -f haraka
 
 Production notes:
 - DKIM private keys and TLS certificates are mounted at runtime; keep them out of the image build context.
-- DKIM host mounts are staged into `LOCAL_DKIM_DIR` on startup so the unprivileged `haraka` process can read them without loosening host file permissions.
-- ARC signing reuses the same key lookup path as DKIM signing: staged local key first, API fallback second.
+- DKIM keys and the TLS bundle are staged into `haraka`-owned copies on startup so the unprivileged `haraka` process can read them without loosening host file permissions.
+- ARC signing reuses the same key lookup path as DKIM signing: staged local key first, database fallback second.
 - Docker Compose requests an IPv6-enabled user-defined bridge network for Haraka.
 - Outbound delivery uses Haraka's default dual-stack behavior, which prefers IPv6 when the container has working IPv6 egress.
 - Docker daemon IPv6 settings in `/etc/docker/daemon.json` are optional for this setup. They are only needed if you want to customize Docker's IPv6 address pools or enable IPv6 on the default `bridge` network.
 
-Health check endpoint:
+Health check:
 ```bash
 nc -z localhost 25 && echo "OK"
 ```
@@ -169,12 +204,26 @@ nc -z localhost 25 && echo "OK"
 # Install dependencies
 npm install
 
-# Run locally (requires Haraka global install)
-npm install -g Haraka
+# Run locally
 npm start
 
-# Run tests
+# Lint and run unit tests
+npm run lint
 npm test
+```
+
+### Database integration tests
+
+`tests/integration/db.test.js` runs `lib/db.js` against a real database built
+from the website's migrations. It is skipped unless `TEST_DATABASE_URL` is set:
+
+```bash
+podman run -d --rm --name anonli-test-pg -e POSTGRES_PASSWORD=test -e POSTGRES_DB=anonli \
+  -p 127.0.0.1:55432:5432 docker.io/library/postgres:16-alpine
+for m in $(ls -d ../anon.li/prisma/migrations/*/ | sort); do
+  podman exec -i anonli-test-pg psql -q -v ON_ERROR_STOP=1 -U postgres -d anonli < "$m/migration.sql"
+done
+TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/anonli npm test
 ```
 
 ## License

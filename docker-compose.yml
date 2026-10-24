@@ -4,11 +4,16 @@ services:
     restart: unless-stopped
     ports:
       - "25:25"
-      - "587:587"
+    # Haraka runs as the unprivileged haraka user and must bind port 25.
+    # Docker already defaults to this; state it so other runtimes behave alike.
+    sysctls:
+      - net.ipv4.ip_unprivileged_port_start=0
     environment:
       - NODE_ENV=production
       - MAIL_API_SECRET=${MAIL_API_SECRET}
       - DATABASE_URL=${DATABASE_URL}
+      # Same value as the website's; decrypts custom-domain DKIM keys
+      - DKIM_ENCRYPTION_KEY=${DKIM_ENCRYPTION_KEY}
       - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL}
       - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN}
       - DKIM_SOURCE_DIR=/etc/haraka/config/dkim-src
@@ -18,7 +23,7 @@ services:
     volumes:
       # Runtime-managed secrets and queue state
       - ./config/dkim:/etc/haraka/config/dkim-src:ro
-      - ./config/tls:/etc/haraka/config/tls:ro
+      - ./config/tls:/etc/haraka/config/tls-src:ro
       - haraka-queue:/etc/haraka/queue
     deploy:
       resources:

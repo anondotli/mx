@@ -1,5 +1,7 @@
 'use strict';
 
+const db = require('../lib/db');
+
 exports.register = function () {
     this.register_hook('data_post', 'spam_check');
 };
@@ -7,6 +9,14 @@ exports.register = function () {
 function hasPassingDkim(auth) {
     const dkimResults = auth?.dkim?.results || [];
     return dkimResults.some(r => r.status?.result === 'pass');
+}
+
+// Counts a rejected message against the alias (dashboard "blocked" stat).
+function recordBlocked(plugin, txn) {
+    const aliasId = txn.notes.alias?.id;
+    if (!aliasId) return;
+    db.incrementAliasStats(aliasId, { blocked: 1 })
+        .catch(err => plugin.logerror(`Stats update failed: ${err.message}`));
 }
 
 exports.spam_check = function (next, connection) {
@@ -43,6 +53,7 @@ exports.spam_check = function (next, connection) {
     if (auth.spf?.status?.result === 'fail') {
         if (!hasPassingDkim(auth)) {
             this.loginfo(`SPF fail + no DKIM pass: ${txn.mail_from.address()}`);
+            recordBlocked(this, txn);
             return next(DENY, 'Message failed SPF with no valid DKIM');
         }
     }

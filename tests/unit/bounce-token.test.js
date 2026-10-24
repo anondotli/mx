@@ -33,6 +33,20 @@ describe('bounce-token', () => {
         assert.doesNotThrow(() => new Address(`${localPart}@anon.li`));
     });
 
+    it('issues lowercase tokens and resolves them whatever the case (MTAs may lowercase)', async () => {
+        const token = await bounceToken.create('a@example.com');
+        assert.match(token, /^[a-z2-7]{29}$/);
+        assert.equal((await bounceToken.decode(token.toUpperCase())).originalSender, 'a@example.com');
+        assert.equal(bounceToken.address(token), `BNC=${token}@anon.li`);
+    });
+
+    it('records whether bounces to the token may be relayed (default: no)', async () => {
+        const plain = await bounceToken.create('a@example.com');
+        const relay = await bounceToken.create('alias@anon.li', { relay: true });
+        assert.equal((await bounceToken.decode(plain)).relay, false);
+        assert.equal((await bounceToken.decode(relay)).relay, true);
+    });
+
     it('returns null for unknown tokens', async () => {
         assert.equal(await bounceToken.decode('this-token-was-never-issued'), null);
     });

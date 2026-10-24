@@ -5,6 +5,10 @@ DKIM_SOURCE_DIR="${DKIM_SOURCE_DIR:-/etc/haraka/config/dkim-src}"
 LOCAL_DKIM_DIR="${LOCAL_DKIM_DIR:-/run/haraka/dkim}"
 export LOCAL_DKIM_DIR
 
+TLS_SOURCE_DIR="${TLS_SOURCE_DIR:-/etc/haraka/config/tls-src}"
+TLS_DIR=/etc/haraka/config/tls
+TLS_BUNDLE=anon.li.pem
+
 require_env() {
     var_name="$1"
     eval "value=\${$var_name:-}"
@@ -68,6 +72,35 @@ stage_dkim_keys() {
     done
 }
 
+# Like the DKIM keys, the TLS bundle (private key + chain) is mounted from the
+# host and staged into a haraka-owned 0600 copy, so the host file can stay
+# 0600 too. A bundle mounted directly at $TLS_DIR (older layout) is used as is.
+stage_tls_bundle() {
+    if [ -r "$TLS_SOURCE_DIR/$TLS_BUNDLE" ]; then
+        mkdir -p "$TLS_DIR"
+        cp "$TLS_SOURCE_DIR/$TLS_BUNDLE" "$TLS_DIR/$TLS_BUNDLE"
+        chown haraka:haraka "$TLS_DIR" "$TLS_DIR/$TLS_BUNDLE"
+        chmod 700 "$TLS_DIR"
+        chmod 600 "$TLS_DIR/$TLS_BUNDLE"
+    fi
+
+    require_file "$TLS_DIR/$TLS_BUNDLE" "TLS certificate bundle"
+    if ! su-exec haraka test -r "$TLS_DIR/$TLS_BUNDLE"; then
+        echo "TLS certificate bundle at $TLS_DIR/$TLS_BUNDLE is not readable by haraka" >&2
+        exit 1
+    fi
+}
+
+# The website stores custom-domain DKIM keys encrypted with this key; without
+# it every custom-domain reply would be signed as anon.li and fail DMARC.
+require_dkim_encryption_key() {
+    require_env DKIM_ENCRYPTION_KEY
+    if ! printf '%s' "$DKIM_ENCRYPTION_KEY" | grep -Eq '^[0-9a-fA-F]{64}$'; then
+        echo "DKIM_ENCRYPTION_KEY must be 64 hexadecimal characters (the website's value)" >&2
+        exit 1
+    fi
+}
+
 validate_dkim_runtime_access() {
     domains="${DKIM_REQUIRED_DOMAINS:-anon.li reply.anon.li}"
 
@@ -83,7 +116,8 @@ validate_dkim_runtime_access() {
 
 require_env MAIL_API_SECRET
 require_env DATABASE_URL
-require_file /etc/haraka/config/tls/anon.li.pem "TLS certificate bundle"
+require_dkim_encryption_key
+stage_tls_bundle
 
 mkdir -p /etc/haraka/queue
 

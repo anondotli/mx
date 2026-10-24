@@ -3,6 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
+const db = require('../../lib/db');
 const plugin = require('../../plugins/data.spam_check');
 
 // Haraka constants
@@ -101,7 +102,9 @@ describe('data.spam_check', () => {
         ]);
     });
 
-    it('still rejects alias traffic that also fails SPF with no DKIM pass', () => {
+    it('still rejects alias traffic that also fails SPF with no DKIM pass, counting it as blocked', (t) => {
+        const stats = [];
+        t.mock.method(db, 'incrementAliasStats', async (id, counts) => { stats.push([id, counts]); });
         const conn = mockConnection(
             {
                 dmarc: { status: { result: 'fail' }, policy: 'reject' },
@@ -113,12 +116,13 @@ describe('data.spam_check', () => {
 
         let result;
         plugin.spam_check.call(
-            { loginfo: () => {} },
+            { loginfo: () => {}, logerror: () => {} },
             (code, msg) => { result = { code, msg }; },
             conn
         );
         assert.equal(result.code, DENY);
         assert.match(result.msg, /SPF/i);
+        assert.deepEqual(stats, [['alias-123', { blocked: 1 }]]);
     });
 
     it('rejects SPF fail with no DKIM pass', () => {

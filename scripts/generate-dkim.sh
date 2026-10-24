@@ -9,6 +9,7 @@ if [ -z "$DOMAIN" ]; then
 fi
 
 KEY_DIR="config/dkim/$DOMAIN"
+umask 077
 mkdir -p "$KEY_DIR"
 
 if [ -f "$KEY_DIR/private" ]; then
@@ -17,6 +18,7 @@ else
     echo "Generating DKIM key for $DOMAIN..."
     openssl genrsa -out "$KEY_DIR/private" 2048
     openssl rsa -in "$KEY_DIR/private" -pubout -out "$KEY_DIR/public"
+    chmod 644 "$KEY_DIR/public"
     
     # Extract public key for DNS record
     PUB_KEY=$(grep -v '^-' "$KEY_DIR/public" | tr -d '\n')

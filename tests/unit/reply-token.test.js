@@ -33,6 +33,12 @@ describe('reply-token', () => {
         assert.doesNotThrow(() => new Address(`<${token}@reply.anon.li>`));
     });
 
+    it('resolves tokens whatever the case (MTAs may lowercase local parts)', async () => {
+        const token = await replyToken.create('a@example.com', 'alias@anon.li', 'me@example.net');
+        assert.match(token, /^[a-z2-7]{29}$/);
+        assert.equal((await replyToken.decode(token.toUpperCase())).aliasEmail, 'alias@anon.li');
+    });
+
     it('returns null for unknown tokens', async () => {
         assert.equal(await replyToken.decode('this-token-was-never-issued'), null);
     });

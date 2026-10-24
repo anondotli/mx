@@ -1,35 +1,35 @@
 FROM node:24-alpine
 
-# Install runtime packages plus native build dependencies for iconv
-RUN apk add --no-cache netcat-openbsd openssl su-exec libstdc++ \
-    && apk add --no-cache --virtual .build-deps python3 make g++
-
-# Update npm to latest version to fix notice
-RUN npm install -g npm@latest
+# Runtime packages
+RUN apk add --no-cache netcat-openbsd openssl su-exec libstdc++
 
 # Create app directory
 WORKDIR /etc/haraka
 
-# Copy package dependencies
+# Install dependencies from the lockfile. iconv is a native module, so the
+# build toolchain is added and removed in the same layer.
 COPY package.json package-lock.json ./
-
-# Install dependencies
-RUN npm install --omit=dev \
+RUN apk add --no-cache --virtual .build-deps python3 make g++ \
+    && npm ci --omit=dev \
+    && npm cache clean --force \
     && apk del .build-deps
 
-# Copy application code
+# Copy application code (root-owned and read-only for the service user)
 COPY . .
 
-# Set permissions
+# The service user only needs to write the outbound queue. Strip group/world
+# write bits copied from the build context (e.g. a checkout on a filesystem
+# that reports 0777).
 RUN addgroup -S haraka && adduser -S haraka -G haraka \
+    && chmod -R go-w /etc/haraka \
     && mkdir -p /etc/haraka/queue \
-    && chown -R haraka:haraka /etc/haraka
+    && chown haraka:haraka /etc/haraka/queue
 
 COPY docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Expose ports
-EXPOSE 25 587
+EXPOSE 25
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \

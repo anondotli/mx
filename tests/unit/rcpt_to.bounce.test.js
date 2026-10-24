@@ -30,16 +30,20 @@ describe('rcpt_to.bounce', () => {
         process.env.MAIL_API_SECRET = originalEnv;
     });
 
-    function mockConnection(rcptAddress) {
+    const NULL_SENDER = { isNull: () => true };
+    const SOME_SENDER = { isNull: () => false };
+
+    function mockConnection(notes = {}, mailFrom = NULL_SENDER) {
         return {
             transaction: {
-                notes: {},
+                notes,
+                mail_from: mailFrom,
             },
         };
     }
 
-    function callPlugin(rcptAddress) {
-        const conn = mockConnection();
+    function callPlugin(rcptAddress, notes) {
+        const conn = mockConnection(notes);
         const params = [{ address: () => rcptAddress }];
         let result;
         plugin.check_bounce.call(
@@ -53,8 +57,8 @@ describe('rcpt_to.bounce', () => {
 
     // Token addresses resolve via an async store lookup, so the callback fires on
     // a later tick — await the hook's returned promise before asserting.
-    async function callPluginAsync(rcptAddress) {
-        const conn = mockConnection();
+    async function callPluginAsync(rcptAddress, mailFrom) {
+        const conn = mockConnection({}, mailFrom);
         const params = [{ address: () => rcptAddress }];
         let result;
         await plugin.check_bounce.call(
@@ -71,12 +75,33 @@ describe('rcpt_to.bounce', () => {
         assert.equal(result.code, undefined);
     });
 
-    it('accepts valid SRS0 bounce and sets txn.notes.bounce', () => {
-        // Create a valid SRS address
+    it('accepts valid SRS0 bounce and marks it as not relayable', () => {
+        // SRS return paths are only minted for forwarded mail: its bounces name
+        // the alias owner's real address and must never reach the sender.
         const srsAddr = srs.rewrite('sender@example.com', 'anon.li', TEST_SECRET);
         const { result, conn } = callPlugin(srsAddr);
         assert.equal(result.code, OK);
-        assert.equal(conn.transaction.notes.bounce.originalSender, 'sender@example.com');
+        assert.deepEqual(conn.transaction.notes.bounce, { originalSender: 'sender@example.com', relay: false });
+    });
+
+    it('accepts SRS addresses whose hash was lowercased by a remote MTA', () => {
+        const srsAddr = srs.rewrite('sender@example.com', 'anon.li', TEST_SECRET).toLowerCase();
+        const { result } = callPlugin(srsAddr);
+        assert.equal(result.code, OK);
+    });
+
+    it('ignores SRS-looking addresses at other domains', () => {
+        const srsAddr = srs.rewrite('sender@example.com', 'anon.li', TEST_SECRET).replace('@anon.li', '@custom.example');
+        const { result } = callPlugin(srsAddr);
+        assert.equal(result.code, undefined);
+    });
+
+    it('answers a second recipient with 452 so it is retried in its own transaction', () => {
+        const srsAddr = srs.rewrite('sender@example.com', 'anon.li', TEST_SECRET);
+        const { result } = callPlugin(srsAddr, { alias: {}, accepted_rcpt: 'shop@anon.li' });
+        assert.equal(result.code, DENYSOFT);
+        assert.equal(result.msg.code, 452);
+        assert.match(result.msg.reply, /^4\.5\.3 /);
     });
 
     it('rejects SRS0 with tampered hash', () => {
@@ -106,7 +131,23 @@ describe('rcpt_to.bounce', () => {
         const token = await bounceToken.create(longSender);
         const { result, conn } = await callPluginAsync(`${bounceToken.ADDRESS_PREFIX}${token}@anon.li`);
         assert.equal(result.code, OK);
-        assert.equal(conn.transaction.notes.bounce.originalSender, longSender);
+        assert.deepEqual(conn.transaction.notes.bounce, { originalSender: longSender, relay: false });
+    });
+
+    it('relays bounces for reply return paths (relay tokens)', async () => {
+        bounceToken._clearLocalStore();
+        const token = await bounceToken.create('shop@anon.li', { relay: true });
+        const { result, conn } = await callPluginAsync(`${bounceToken.ADDRESS_PREFIX}${token}@anon.li`);
+        assert.equal(result.code, OK);
+        assert.deepEqual(conn.transaction.notes.bounce, { originalSender: 'shop@anon.li', relay: true });
+    });
+
+    it('accepts only null-sender mail (bounces, auto-replies) on relay return paths', async () => {
+        bounceToken._clearLocalStore();
+        const token = await bounceToken.create('shop@anon.li', { relay: true });
+        const { result, conn } = await callPluginAsync(`${bounceToken.ADDRESS_PREFIX}${token}@anon.li`, SOME_SENDER);
+        assert.equal(result.code, DENY);
+        assert.equal(conn.transaction.notes.bounce, undefined);
     });
 
     it('rejects an unknown/expired bounce token', async () => {
