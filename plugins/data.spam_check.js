@@ -25,7 +25,7 @@ exports.spam_check = function (next, connection) {
 
     // Skip trusted paths
     if (txn.notes.is_reply) return next();
-    if (txn.notes.zoho_relay) return next();
+    if (txn.notes.purelymail_relay) return next();
 
     const auth = txn.notes.mailauth;
     if (!auth) return next();

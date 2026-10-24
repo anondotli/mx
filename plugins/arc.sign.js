@@ -14,8 +14,8 @@ exports.seal_message = async function (next, connection) {
     const txn = connection.transaction;
     if (!txn) return next();
 
-    // Only ARC-sign forwarded mail (alias forward copies and Zoho relays)
-    if (!txn.notes.forward && !txn.notes.zoho_relay) return next();
+    // Only ARC-sign forwarded mail (alias forward copies and Purelymail relays)
+    if (!txn.notes.forward && !txn.notes.purelymail_relay) return next();
 
     try {
         const auth = txn.notes.mailauth;

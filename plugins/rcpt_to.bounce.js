@@ -72,7 +72,7 @@ exports.check_bounce = async function (next, connection, params) {
         return next(DENY, 'Invalid bounce address');
     }
 
-    // SRS return paths are only minted for forwarded mail and Zoho relays
+    // SRS return paths are only minted for forwarded mail and Purelymail relays
     return accept.call(this, next, txn, email, result.originalSender, false);
 };
 

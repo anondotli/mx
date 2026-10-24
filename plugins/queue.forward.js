@@ -437,20 +437,20 @@ async function relayBounce(plugin, txn, next) {
     outbound.send_trans_email(txn, next);
 }
 
-// == ZOHO RELAY == reserved anon.li addresses go to the team mailbox.
-async function relayToZoho(plugin, txn, next) {
-    txn.notes.zoho_mx = true;
-    txn.rcpt_to = [new Address(txn.notes.zoho_recipient)]; // a repeated RCPT is delivered once
+// == PURELYMAIL RELAY == reserved anon.li addresses go to the team mailbox.
+async function relayToPurelymail(plugin, txn, next) {
+    txn.notes.purelymail_mx = true;
+    txn.rcpt_to = [new Address(txn.notes.purelymail_recipient)]; // a repeated RCPT is delivered once
     const sender = txn.mail_from?.address() || null;
     if (sender) {
         // A stateless SRS return path: anyone can mail a reserved address, so
-        // nothing is stored per message. A rejection by Zoho is reported to the
-        // sender directly (handle_bounce); later asynchronous bounces to the SRS
-        // address are not relayed.
-        txn.notes.zoho_original_sender = sender;
+        // nothing is stored per message. A rejection by Purelymail is reported
+        // to the sender directly (handle_bounce); later asynchronous bounces to
+        // the SRS address are not relayed.
+        txn.notes.purelymail_original_sender = sender;
         txn.mail_from = new Address(await buildEnvelopeSender(sender, process.env.MAIL_API_SECRET));
     }
-    plugin.loginfo(`Zoho relay: ${txn.notes.zoho_recipient}`);
+    plugin.loginfo(`Purelymail relay: ${txn.notes.purelymail_recipient}`);
     outbound.send_trans_email(txn, next);
 }
 
@@ -494,12 +494,8 @@ async function deliversToUs(domain, ourHost) {
 }
 
 exports.route_mx = async function (next, hmail, domain) {
-    if (hmail?.todo?.notes?.zoho_mx) {
-        return next(OK, [
-            { priority: 10, exchange: 'mx.zoho.eu' },
-            { priority: 20, exchange: 'mx2.zoho.eu' },
-            { priority: 50, exchange: 'mx3.zoho.eu' },
-        ]);
+    if (hmail?.todo?.notes?.purelymail_mx) {
+        return next(OK, [{ priority: 50, exchange: 'mailserver.purelymail.com' }]);
     }
     const ourHost = String(this.config.get('me') || '').trim().toLowerCase();
     if (await deliversToUs(domain, ourHost)) {
@@ -513,7 +509,7 @@ exports.route_mx = async function (next, hmail, domain) {
 // the alias owner's real address, so it would come straight back to the
 // original sender (via SRS). Suppress it. Other DSNs carry nothing private and
 // are addressed directly instead of looping through the return path: a bounced
-// reply to the alias, a Zoho relay to its original sender.
+// reply to the alias, a Purelymail relay to its original sender.
 exports.handle_bounce = function (next, hmail, err) {
     const notes = hmail?.todo?.notes || {};
     if (notes.forward) {
@@ -523,7 +519,7 @@ exports.handle_bounce = function (next, hmail, err) {
 
     let returnTo = null;
     if (notes.reply) returnTo = notes.reply.aliasEmail;
-    else if (notes.zoho_relay) returnTo = notes.zoho_original_sender;
+    else if (notes.purelymail_relay) returnTo = notes.purelymail_original_sender;
     else return next();
 
     if (!returnTo) return next(OK);
@@ -541,7 +537,7 @@ exports.process_forward = async function (next, connection) {
     if (!txn) return next();
 
     try {
-        if (txn.notes.zoho_relay) return await relayToZoho(plugin, txn, next);
+        if (txn.notes.purelymail_relay) return await relayToPurelymail(plugin, txn, next);
         if (txn.notes.alias) return await forwardToRecipients(plugin, txn, next);
         if (txn.notes.reply) return await sendReply(plugin, txn, next);
         if (txn.notes.bounce) return await relayBounce(plugin, txn, next);

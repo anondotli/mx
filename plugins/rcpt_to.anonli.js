@@ -13,6 +13,8 @@ let reservedAliases = new Set();
 exports.register = function () {
     const plugin = this;
     this.register_hook('rcpt', 'check_alias');
+    // After every data_post check, before queue.forward (config/plugins order)
+    this.register_hook('queue', 'create_catch_all_alias');
 
     // Messages per alias (limit.ini: alias_rate_limit_window seconds, alias_rate_limit_count)
     const main = plugin.config.get('limit.ini')?.main || {};
@@ -20,6 +22,13 @@ exports.register = function () {
         keyPrefix: 'alias_rate:',
         windowSeconds: parseInt(main.alias_rate_limit_window, 10) || 300,
         maxCount: parseInt(main.alias_rate_limit_count, 10) || 50,
+    });
+    // New catch-all aliases per domain (limit.ini: catch_all_rate_limit_window
+    // seconds, catch_all_rate_limit_count)
+    plugin.catchAllLimiter = createRateLimiter({
+        keyPrefix: 'catch_all_rate:',
+        windowSeconds: parseInt(main.catch_all_rate_limit_window, 10) || 3600,
+        maxCount: parseInt(main.catch_all_rate_limit_count, 10) || 30,
     });
 
     try {
@@ -34,6 +43,7 @@ exports.register = function () {
 
 exports.shutdown = function () {
     this.aliasLimiter?.stop();
+    this.catchAllLimiter?.stop();
 };
 
 exports.check_alias = async function (next, connection, params) {
@@ -54,10 +64,10 @@ exports.check_alias = async function (next, connection, params) {
 
     const { local: localPart, domain } = splitAddress(email) || {};
     if (domain === OWN_DOMAIN && reservedAliases.has(localPart)) {
-        txn.notes.zoho_relay = true;
-        txn.notes.zoho_recipient = email;
+        txn.notes.purelymail_relay = true;
+        txn.notes.purelymail_recipient = email;
         rcptPolicy.accept(txn, email);
-        plugin.loginfo(`Reserved alias ${email} → Zoho relay`);
+        plugin.loginfo(`Reserved alias ${email} → Purelymail relay`);
         return next(OK);
     }
 
@@ -84,6 +94,34 @@ exports.check_alias = async function (next, connection, params) {
 
     } catch (err) {
         plugin.logerror(`Alias lookup failed: ${err.message}`);
+        return next(DENYSOFT, 'Temporary lookup failure');
+    }
+};
+
+// A catch-all address accepted at RCPT gets its alias only now, once the
+// message has passed every check: probes and rejected mail must not create
+// aliases, which count against the owner's quota and fill their dashboard.
+exports.create_catch_all_alias = async function (next, connection) {
+    const plugin = this;
+    const txn = connection.transaction;
+    const pending = txn?.notes?.alias;
+    if (!pending?.catchAll) return next();
+
+    const limited = await plugin.catchAllLimiter.hit(pending.domain, (err) => {
+        plugin.logerror(`Catch-all rate limit error: ${err.message} — using local fallback`);
+    });
+    if (limited) {
+        plugin.loginfo(`Catch-all rate limit exceeded for ${pending.domain}`);
+        return next(DENYSOFT, 'Too many new addresses on this domain, try again later');
+    }
+
+    try {
+        const alias = await db.createCatchAllAlias(pending);
+        if (!alias) return next(DENY, 'No such user here');
+        txn.notes.alias = alias;
+        return next();
+    } catch (err) {
+        plugin.logerror(`Catch-all alias creation failed: ${err.message}`);
         return next(DENYSOFT, 'Temporary lookup failure');
     }
 };

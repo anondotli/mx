@@ -43,6 +43,18 @@ describe('effective Haraka configuration', () => {
         assert.equal(connection.main.listen, undefined, 'connection.ini listen is ignored by Haraka');
     });
 
+    it('reads every rate limit from limit.ini', () => {
+        assert.deepEqual(config.get('limit.ini').main, {
+            rate_limit_window: 60,
+            rate_limit_count: 20,
+            max_rejected_rcpts: 10,
+            alias_rate_limit_window: 300,
+            alias_rate_limit_count: 50,
+            catch_all_rate_limit_window: 3600,
+            catch_all_rate_limit_count: 30,
+        });
+    });
+
     it('enables the expected plugins in order', () => {
         const plugins = config.get('plugins', 'list');
         assert.deepEqual(plugins, [

@@ -172,10 +172,21 @@ describe('lib/db.js against the website schema', { skip }, () => {
             return { u, r, d };
         }
 
+        // RCPT (lookupAlias), then the queue hook's creation
+        async function deliver(email) {
+            const found = await db.lookupAlias(email);
+            return found?.catchAll ? db.createCatchAllAlias(found) : found;
+        }
+
         it('creates a RANDOM alias with its primary recipient, once', async () => {
             const { u, r, d } = await personalCatchAll();
             const email = `hello@${d.domain}`;
-            const created = await db.lookupAlias(email);
+            const found = await db.lookupAlias(email);
+            assert.equal(found.id, null);
+            assert.deepEqual(found.recipients, [{ email: r.email, pgpPublicKey: null }]);
+            assert.equal(await countAliases(email), 0, 'an RCPT alone creates nothing');
+
+            const created = await db.createCatchAllAlias(found);
             assert.equal(created.email, email);
             assert.equal(created.userId, u.id);
             assert.equal(created.organizationId, null);
@@ -196,7 +207,7 @@ describe('lib/db.js against the website schema', { skip }, () => {
         it('creates exactly one alias under concurrent first deliveries', async () => {
             const { d } = await personalCatchAll();
             const email = `race@${d.domain}`;
-            const results = await Promise.all(Array.from({ length: 6 }, () => db.lookupAlias(email)));
+            const results = await Promise.all(Array.from({ length: 6 }, () => deliver(email)));
             assert.equal(new Set(results.map(r => r?.id)).size, 1);
             assert.equal(await countAliases(email), 1);
         });
@@ -208,9 +219,14 @@ describe('lib/db.js against the website schema', { skip }, () => {
             assert.equal(await countAliases(disabled.email), 1);
         });
 
-        it('enforces the free quota of 10 random aliases', async () => {
+        it('enforces the free quota of 10 random aliases, at RCPT and again at creation', async () => {
             const { u, d } = await personalCatchAll();
-            for (let i = 0; i < 10; i++) await alias({ userId: u.id, format: 'RANDOM' });
+            for (let i = 0; i < 9; i++) await alias({ userId: u.id, format: 'RANDOM' });
+            const found = await db.lookupAlias(`last@${d.domain}`);
+            assert.ok(found, 'one left');
+            await alias({ userId: u.id, format: 'RANDOM' });
+            assert.equal(await db.createCatchAllAlias(found), null, 'filled up after RCPT');
+            assert.equal(await countAliases(`last@${d.domain}`), 0);
             assert.equal(await db.lookupAlias(`over@${d.domain}`), null);
         });
 
@@ -264,7 +280,8 @@ describe('lib/db.js against the website schema', { skip }, () => {
             assert.equal(await db.lookupAlias(`a@${d.domain}`), null, 'unsubscribed team has no capacity');
 
             await subscription({ organizationId: o.id, product: 'business', tier: 'pro' });
-            const created = await db.lookupAlias(`a@${d.domain}`);
+            const created = await deliver(`a@${d.domain}`);
+            assert.ok(created.id);
             assert.equal(created.organizationId, o.id);
             assert.equal(created.userId, creator.id);
 

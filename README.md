@@ -102,10 +102,10 @@ a restart are rejected).
 | Plugin | Purpose |
 |--------|---------|
 | `tls` | STARTTLS (TLS 1.2+) |
-| `limit-upstash` | Per-IP connection rate limiting (Redis + in-memory fallback) |
+| `limit-upstash` | Per-IP connection rate limiting (IPv6 per /64; Redis + in-memory fallback) and a cap on rejected recipients per connection |
 | `mailauth` | Inbound SPF / DKIM / ARC / DMARC validation |
 | `rcpt_to.bounce` | Validates SRS and `BNC=` return paths |
-| `rcpt_to.anonli` | Validates aliases and catch-all (direct Postgres) + per-alias rate limiting |
+| `rcpt_to.anonli` | Validates aliases and catch-all (direct Postgres) + per-alias rate limiting; creates catch-all aliases at queue time, rate-limited per domain |
 | `rcpt_to.reply` | Resolves reply-token addresses (Redis) and checks the alias may still send |
 | `data.loop_detect` | Rejects mail loops |
 | `data.spam_check` | DMARC/SPF policy enforcement |
@@ -121,6 +121,9 @@ a restart are rejected).
   (`Disposition-Notification-To`, `Mail-Followup-To`, ...) are removed so the
   recipient's client never answers the sender directly. Senders publishing a
   strict DMARC policy get `From` rewritten to `"Name via anon.li" <alias>`.
+  A new address on a catch-all domain is accepted at `RCPT` if the owner has
+  quota left, but its alias is only created once the message has passed every
+  check, so probes and rejected mail never use up the quota.
 - **Reply** (`<token>@reply.anon.li`): accepted only from one of the alias
   owner's verified recipient addresses, authenticated by SPF/DKIM (envelope)
   or DMARC (`From`), and sent to the original correspondent as the alias. Only content and threading headers (`Subject`, `In-Reply-To`,
@@ -133,7 +136,7 @@ a restart are rejected).
   (the bounce would name the recipient's real address). Bounced replies are
   delivered to the alias owner.
 - **Reserved addresses** (`config/reserved_aliases.json`, e.g. `hi@anon.li`)
-  are relayed to the team mailbox at Zoho.
+  are relayed to the team mailbox at Purelymail.
 - **Mail for a domain whose MX is this server** (a reply to another anon.li
   alias, a bounced reply) is handed back to the local listener instead of being
   skipped by outbound's loop protection.
@@ -173,7 +176,7 @@ Users must add (verified by the website):
 - **STARTTLS** with TLS 1.2+
 - **Constant-time** SRS hash comparison
 - **Input validation** on all email addresses
-- **Rate limiting** per connecting IP and per alias
+- **Rate limiting** per connecting IP (IPv6 per /64), per alias and per catch-all domain (new aliases); connections are dropped after 10 rejected recipients
 - **Message size limit** of 25 MiB
 - **DKIM/SPF/DMARC/ARC** for email authentication
 - **PGP encryption** for enhanced privacy

@@ -779,7 +779,7 @@ describe('queue.forward bounce mode', () => {
     });
 });
 
-describe('queue.forward Zoho relay', () => {
+describe('queue.forward Purelymail relay', () => {
     let previousSecret;
     beforeEach(() => {
         previousSecret = process.env.MAIL_API_SECRET;
@@ -794,23 +794,23 @@ describe('queue.forward Zoho relay', () => {
         t.mock.method(bounceToken, 'create', async () => assert.fail('nothing stored for SRS-sized senders'));
         const { queued, run } = setup();
         const txn = await receivedTransaction('Subject: hi\r\n\r\nbody\r\n', {
-            notes: { zoho_relay: true, zoho_recipient: 'hi@anon.li' },
+            notes: { purelymail_relay: true, purelymail_recipient: 'hi@anon.li' },
             mailFrom: new Address('sender@example.com'),
         });
 
         assert.equal((await run(txn)).code, OK);
         const relayed = queued[0];
-        assert.equal(relayed.notes.zoho_mx, true);
-        assert.equal(relayed.notes.zoho_original_sender, 'sender@example.com');
+        assert.equal(relayed.notes.purelymail_mx, true);
+        assert.equal(relayed.notes.purelymail_original_sender, 'sender@example.com');
         assert.match(relayed.mail_from.address(), /^SRS0=.*@anon\.li$/);
         assert.deepEqual(relayed.rcpt_to.map(r => r.address()), ['hi@anon.li']);
     });
 
-    it('uses a short bounce token for long ESP senders before relaying to Zoho', async () => {
+    it('uses a short bounce token for long ESP senders before relaying to Purelymail', async () => {
         const sender = 'bounces+10329420-d952-hi=anon.li@em2372.brandfetch.co';
         const { queued, run } = setup();
         const txn = await receivedTransaction('Subject: hi\r\n\r\nbody\r\n', {
-            notes: { zoho_relay: true, zoho_recipient: 'hi@anon.li' },
+            notes: { purelymail_relay: true, purelymail_recipient: 'hi@anon.li' },
             mailFrom: new Address(sender),
         });
 
@@ -822,11 +822,11 @@ describe('queue.forward Zoho relay', () => {
         assert.equal(decoded.originalSender, sender);
     });
 
-    it('DENYSOFTs Zoho relay errors instead of throwing out of the hook', async (t) => {
+    it('DENYSOFTs Purelymail relay errors instead of throwing out of the hook', async (t) => {
         t.mock.method(bounceToken, 'create', async () => { throw new Error('redis down'); });
         const { queued, run } = setup();
         const txn = await receivedTransaction('Subject: hi\r\n\r\nbody\r\n', {
-            notes: { zoho_relay: true, zoho_recipient: 'hi@anon.li' },
+            notes: { purelymail_relay: true, purelymail_recipient: 'hi@anon.li' },
             mailFrom: new Address('bounces+10329420-d952-hi=anon.li@em2372.brandfetch.co'),
         });
 
@@ -856,11 +856,11 @@ describe('queue.forward outbound bounce hook', () => {
         assert.equal(hmail.todo.mail_from.address(), 'shop@anon.li');
     });
 
-    it('sends Zoho relay DSNs straight to the original sender, and none for null senders', () => {
-        const relayed = bounceWith({ zoho_relay: true, zoho_original_sender: 'someone@example.com' });
+    it('sends Purelymail relay DSNs straight to the original sender, and none for null senders', () => {
+        const relayed = bounceWith({ purelymail_relay: true, purelymail_original_sender: 'someone@example.com' });
         assert.equal(relayed.code, undefined);
         assert.equal(relayed.hmail.todo.mail_from.address(), 'someone@example.com');
-        assert.equal(bounceWith({ zoho_relay: true }).code, OK);
+        assert.equal(bounceWith({ purelymail_relay: true }).code, OK);
     });
 
     it('leaves other bounces to Haraka', () => {
@@ -960,10 +960,10 @@ describe('queue.forward outbound MX routing', () => {
     });
     const LOOPBACK = [{ priority: 10, exchange: '127.0.0.1', port: 25 }];
 
-    it('sends Zoho relays to Zoho', async () => {
-        const { code, mx } = await route('anon.li', { zoho_mx: true });
+    it('sends Purelymail relays to Purelymail', async () => {
+        const { code, mx } = await route('anon.li', { purelymail_mx: true });
         assert.equal(code, OK);
-        assert.deepEqual(mx.map(m => m.exchange), ['mx.zoho.eu', 'mx2.zoho.eu', 'mx3.zoho.eu']);
+        assert.deepEqual(mx.map(m => m.exchange), ['mailserver.purelymail.com']);
     });
 
     it('delivers mail for domains whose MX is this host to our own listener', async (t) => {
