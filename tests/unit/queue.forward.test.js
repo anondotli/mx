@@ -162,8 +162,8 @@ describe('queue.forward From munging of encoded display names', () => {
 });
 
 describe('queue.forward From munging', () => {
-    const txnWith = (policy, fromHeader) => ({
-        notes: { mailauth: { dmarc: { policy } } },
+    const txnWith = (policy, fromHeader, result = 'pass') => ({
+        notes: { mailauth: { dmarc: { policy, status: { result } } } },
         header: { get: name => (name === 'From' ? fromHeader : null) },
     });
 
@@ -173,6 +173,13 @@ describe('queue.forward From munging', () => {
         assert.equal(queueForward.shouldMungeFrom(txnWith('none')), false);
         assert.equal(queueForward.shouldMungeFrom({ notes: {} }), false);
         assert.equal(queueForward.shouldMungeFrom({}), false);
+    });
+
+    it('never munges mail that failed DMARC, which would sign a forged sender', () => {
+        assert.equal(queueForward.shouldMungeFrom(txnWith('reject', null, 'fail')), false);
+        assert.equal(queueForward.shouldMungeFrom(txnWith('quarantine', null, 'fail')), false);
+        assert.equal(queueForward.shouldMungeFrom(txnWith('quarantine', null, 'temperror')), false);
+        assert.equal(queueForward.shouldMungeFrom({ notes: { mailauth: { dmarc: { policy: 'reject' } } } }), false);
     });
 
     it('keeps the sender display name and points the address at the alias', () => {
@@ -505,7 +512,24 @@ describe('queue.forward forward mode', () => {
         assert.equal((await run(txn)).code, OK);
         assert.deepEqual(queued.map(t => t.rcpt_to[0].address), ['me@example.net']);
         assert.equal(logs.error.length, 1);
-        assert.match(logs.error[0], /invalid recipient address <not a valid address>/);
+        assert.match(logs.error[0], /Skipping recipient 1\/2 of .*: invalid address/);
+        assert.match(logs.info.join('\n'), /Forwarded \S+-1 to recipient 2\/2/);
+    });
+
+    it('never logs a recipient\'s real address (the log would map aliases to mailboxes)', async () => {
+        const { run, logs } = setup();
+        const txn = await receivedTransaction(inbound('Hello\r\n'), {
+            notes: { alias: alias([
+                { email: 'not a valid address', pgpPublicKey: null },
+                { email: 'other@anon.li', pgpPublicKey: null },
+                { email: 'me@example.net', pgpPublicKey: 'not a key' },
+            ]) },
+            mailFrom: new Address('news@shop.example'),
+        });
+
+        assert.equal((await run(txn)).code, OK);
+        const all = [...logs.info, ...logs.warn, ...logs.error].join('\n');
+        assert.doesNotMatch(all, /not a valid address|other@anon\.li|me@example\.net/);
     });
 
     it('tempfails without queueing anything when one recipient\'s reply token fails (no duplicates on retry)', async (t) => {
@@ -848,6 +872,20 @@ describe('queue.forward outbound bounce hook', () => {
 
     it('suppresses DSNs for forwarded copies (they name the real recipient)', () => {
         assert.equal(bounceWith({ forward: { aliasEmail: 'shop@anon.li' } }).code, OK);
+    });
+
+    it('logs only the SMTP status of a failed forward, never the reply text', () => {
+        const status = (err) => queueForward.smtpStatus(err);
+        assert.equal(status(new Error('550 5.1.1 <me@example.net>: Recipient address rejected')), '550 5.1.1');
+        assert.equal(status('550 Mailbox unavailable'), '550');
+        // Haraka's message for an RCPT rejection lists the addresses; the status
+        // comes from the recipient's DSN fields instead
+        const rejected = Object.assign(new Error('Some recipients failed: me@example.net'), {
+            bounced_rcpt: [{ dsn_smtp_code: '550', dsn_status: '5.1.1' }],
+        });
+        assert.equal(status(rejected), '550 5.1.1');
+        assert.equal(status(new Error('Some recipients failed: me@example.net')), 'no SMTP status');
+        assert.equal(status(new Error('Too many failures (Tried all MXs example.net)')), 'no SMTP status');
     });
 
     it('sends DSNs for replies straight to the alias', () => {

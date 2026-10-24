@@ -56,8 +56,13 @@ describe('effective Haraka configuration', () => {
         });
     });
 
-    it('parses envelope addresses strictly (connection.ini [main] postel)', () => {
-        assert.equal(connection.main.postel, false);
+    it('accepts over-long envelope local-parts (connection.ini [main] postel)', () => {
+        assert.equal(connection.main.postel, true);
+    });
+
+    it('declares the public IP where Haraka reads it (smtp.ini [main] public_ip)', () => {
+        assert.equal(smtp.main.public_ip, '192.129.190.171');
+        assert.equal(connection.main.public_ip, undefined, 'connection.ini public_ip is ignored by Haraka');
     });
 
     it('keeps the mailauth settings the npm plugin shipped', () => {

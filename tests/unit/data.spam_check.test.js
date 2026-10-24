@@ -61,14 +61,30 @@ describe('data.spam_check', () => {
         assert.match(result.msg, /DMARC/i);
     });
 
-    it('flags but delivers DMARC reject mail for alias traffic', () => {
-        const addedHeaders = [];
+    it('rejects DMARC reject mail for alias traffic too, counting it as blocked', (t) => {
+        const stats = [];
+        t.mock.method(db, 'incrementAliasStats', async (id, counts) => { stats.push([id, counts]); });
         const conn = mockConnection(
             { dmarc: { status: { result: 'fail' }, policy: 'reject' } },
             { alias: { id: 'alias-123' } }
         );
-        conn.transaction.add_header = (name, val) => { addedHeaders.push({ name, val }); };
 
+        let result;
+        plugin.spam_check.call(
+            { loginfo: () => {}, logerror: () => {} },
+            (code, msg) => { result = { code, msg }; },
+            conn
+        );
+        assert.equal(result.code, DENY);
+        assert.match(result.msg, /DMARC/i);
+        assert.deepEqual(stats, [['alias-123', { blocked: 1 }]]);
+    });
+
+    it('passes alias traffic that passes a DMARC reject policy', () => {
+        const conn = mockConnection(
+            { dmarc: { status: { result: 'pass' }, policy: 'reject' } },
+            { alias: { id: 'alias-123' } }
+        );
         let result;
         plugin.spam_check.call(
             { loginfo: () => {} },
@@ -76,10 +92,6 @@ describe('data.spam_check', () => {
             conn
         );
         assert.equal(result.code, undefined);
-        assert.deepEqual(addedHeaders, [
-            { name: 'X-Spam-Flag', val: 'YES' },
-            { name: 'X-Spam-Reason', val: 'DMARC fail (policy=reject)' },
-        ]);
     });
 
     it('flags but delivers DMARC quarantine', () => {
@@ -102,12 +114,11 @@ describe('data.spam_check', () => {
         ]);
     });
 
-    it('still rejects alias traffic that also fails SPF with no DKIM pass, counting it as blocked', (t) => {
+    it('rejects alias traffic that fails SPF with no DKIM pass, counting it as blocked', (t) => {
         const stats = [];
         t.mock.method(db, 'incrementAliasStats', async (id, counts) => { stats.push([id, counts]); });
         const conn = mockConnection(
             {
-                dmarc: { status: { result: 'fail' }, policy: 'reject' },
                 spf: { status: { result: 'fail' } },
                 dkim: { results: [{ status: { result: 'fail' } }] },
             },

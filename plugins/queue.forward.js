@@ -140,9 +140,29 @@ function encodeFromDisplayName(name) {
 // publish p=reject/quarantine therefore bounce at the receiver. Rewrite From
 // onto the alias — a domain we DKIM-sign — so DMARC aligns, keeping the sender's
 // display name. Replies still route through the Reply-To reply token.
+//
+// Only mail that passed DMARC here: rewriting a failing message would put our
+// signature on a forged sender. data.spam_check refuses p=reject failures, and
+// p=quarantine failures keep their From, so the recipient's provider applies it.
 function shouldMungeFrom(txn) {
-    const policy = txn?.notes?.mailauth?.dmarc?.policy;
-    return policy === 'reject' || policy === 'quarantine';
+    const dmarc = txn?.notes?.mailauth?.dmarc;
+    if (dmarc?.status?.result !== 'pass') return false;
+    return dmarc.policy === 'reject' || dmarc.policy === 'quarantine';
+}
+
+// Names one of an alias's recipients in the log. Never the address: the log
+// would otherwise map every alias to its owner's real mailbox.
+function recipientLabel(index, count) {
+    return `recipient ${index + 1}/${count}`;
+}
+
+// The SMTP status of a failed delivery ("550 5.7.25"), without the reply text,
+// which remote servers often fill with the recipient's address.
+function smtpStatus(err) {
+    const rcpt = err?.bounced_rcpt?.[0];
+    if (rcpt?.dsn_smtp_code) return [rcpt.dsn_smtp_code, rcpt.dsn_status].filter(Boolean).join(' ');
+    const match = /^(\d{3})(?: (\d\.\d{1,3}\.\d{1,3}))?/.exec(String(err?.message ?? err ?? ''));
+    return match ? match.slice(1).filter(Boolean).join(' ') : 'no SMTP status';
 }
 
 function buildMungedFrom(txn, aliasEmail) {
@@ -194,18 +214,18 @@ async function buildEncryptedCopy(raw, publicKey, headers) {
 // Validates one recipient and mints its reply token. Returns null for an
 // address that can never be delivered; throws on transient failures (token
 // store).
-async function prepareTarget(plugin, { recipient, originalSender, aliasEmail }) {
+async function prepareTarget(plugin, { recipient, label, originalSender, aliasEmail }) {
     let to;
     try {
         to = new Address(recipient.email);
     } catch (_err) {
-        plugin.logerror(`Skipping invalid recipient address <${recipient.email}> of ${aliasEmail}`);
+        plugin.logerror(`Skipping ${label} of ${aliasEmail}: invalid address`);
         return null;
     }
     // The website refuses recipients on alias domains (a forwarding loop that
     // data.loop_detect would reject); never queue one left over from old data.
     if ([OWN_DOMAIN, REPLY_DOMAIN].includes(domainOf(recipient.email))) {
-        plugin.logerror(`Skipping recipient <${recipient.email}> of ${aliasEmail}: alias domains cannot be recipients`);
+        plugin.logerror(`Skipping ${label} of ${aliasEmail}: alias domains cannot be recipients`);
         return null;
     }
 
@@ -217,19 +237,19 @@ async function prepareTarget(plugin, { recipient, originalSender, aliasEmail }) 
         const token = await replyToken.create(originalSender, aliasEmail, recipient.email);
         replyTo = `${token}@${REPLY_DOMAIN}`;
     }
-    return { recipient, to, replyTo };
+    return { recipient, label, to, replyTo };
 }
 
 // Builds one recipient's copy (`headers`: message-wide changes; `fromFor`:
 // the copy's From, or null to keep it), PGP-encrypted when they have a key.
-async function buildCopy(plugin, { recipient, replyTo }, { raw, headers, fromFor }) {
+async function buildCopy(plugin, { recipient, label, replyTo }, { raw, headers, fromFor }) {
     const copyHeaders = [...headers, ['Reply-To', replyTo], ['From', fromFor(replyTo)]];
 
     if (recipient.pgpPublicKey) {
         try {
             return { encrypted: true, message: await buildEncryptedCopy(raw, recipient.pgpPublicKey, copyHeaders) };
         } catch (err) {
-            plugin.logwarn(`PGP/MIME failed for ${recipient.email}, sending unencrypted: ${err.message}`);
+            plugin.logwarn(`PGP/MIME failed for ${label}, sending unencrypted: ${err.message}`);
         }
     }
 
@@ -306,8 +326,9 @@ async function forwardToRecipients(plugin, txn, next) {
     // Validate every recipient and mint every reply token before queueing
     // anything, so a transient failure (token store) tempfails the message
     // without having delivered some copies — a retry would duplicate them.
-    const targets = (await Promise.all(aliasData.recipients.map(recipient =>
-        prepareTarget(plugin, { recipient, originalSender, aliasEmail })
+    const { recipients } = aliasData;
+    const targets = (await Promise.all(recipients.map((recipient, index) =>
+        prepareTarget(plugin, { recipient, label: recipientLabel(index, recipients.length), originalSender, aliasEmail })
     ))).filter(Boolean);
     if (targets.length === 0) {
         return next(DENY, 'No deliverable recipient for this alias');
@@ -319,13 +340,15 @@ async function forwardToRecipients(plugin, txn, next) {
     // duplicate the copies already queued, but no recipient silently misses it.
     let failed = 0;
     for (const [index, target] of targets.entries()) {
+        // The copy's queue id, which outbound's log lines for it start with
+        const uuid = `${txn.uuid}-${index + 1}`;
         try {
             const { encrypted, message } = await buildCopy(plugin, target, { raw, headers, fromFor });
-            await queueRawMessage({ uuid: `${txn.uuid}-${index + 1}`, from, to: target.to, raw: message, notes });
-            plugin.loginfo(`${encrypted ? 'PGP/MIME encrypted and sent' : 'Forwarded'} to ${target.to.address}`);
+            await queueRawMessage({ uuid, from, to: target.to, raw: message, notes });
+            plugin.loginfo(`${encrypted ? 'PGP/MIME encrypted and sent' : 'Forwarded'} ${uuid} to ${target.label}`);
         } catch (err) {
             failed++;
-            plugin.logerror(`Queueing the copy of ${txn.uuid} for ${target.to.address} failed: ${err.message}`);
+            plugin.logerror(`Queueing ${uuid} for ${target.label} failed: ${err.message}`);
         }
     }
     if (failed > 0) {
@@ -513,7 +536,7 @@ exports.route_mx = async function (next, hmail, domain) {
 exports.handle_bounce = function (next, hmail, err) {
     const notes = hmail?.todo?.notes || {};
     if (notes.forward) {
-        this.loginfo(`Suppressing DSN for failed forward from ${notes.forward.aliasEmail}: ${err?.message || err}`);
+        this.loginfo(`Suppressing DSN for failed forward from ${notes.forward.aliasEmail}: ${smtpStatus(err)}`);
         return next(OK);
     }
 
@@ -553,6 +576,7 @@ exports.setRawHeaders = setRawHeaders;
 exports.replaceHeaderInBlock = replaceHeaderInBlock;
 exports.encodeFromDisplayName = encodeFromDisplayName;
 exports.shouldMungeFrom = shouldMungeFrom;
+exports.smtpStatus = smtpStatus;
 exports.buildMungedFrom = buildMungedFrom;
 exports.buildEnvelopeSender = buildEnvelopeSender;
 exports.sanitizeReplyHeaders = sanitizeReplyHeaders;

@@ -119,8 +119,10 @@ a restart are rejected).
   recipient, each with its own `Reply-To` reply token, SRS envelope, tracking
   removed and optionally PGP-encrypted. Read-receipt and followup headers
   (`Disposition-Notification-To`, `Mail-Followup-To`, ...) are removed so the
-  recipient's client never answers the sender directly. Senders publishing a
-  strict DMARC policy get `From` rewritten to `"Name via anon.li" <alias>`.
+  recipient's client never answers the sender directly. Mail that passes a
+  strict DMARC policy gets `From` rewritten to `"Name via anon.li" <alias>`;
+  mail failing `p=reject` is refused, and mail failing `p=quarantine` keeps its
+  `From` so the recipient's provider applies the policy.
   A new address on a catch-all domain is accepted at `RCPT` if the owner has
   quota left, but its alias is only created once the message has passed every
   check, so probes and rejected mail never use up the quota.
@@ -196,7 +198,8 @@ Production notes:
 - Outbound delivery uses Haraka's default dual-stack behavior, which prefers IPv6 when the container has working IPv6 egress.
 - Docker daemon IPv6 settings in `/etc/docker/daemon.json` are optional for this setup. They are only needed if you want to customize Docker's IPv6 address pools or enable IPv6 on the default `bridge` network.
 - Message data with bare line feeds (LF without CR) is refused with `451 Bare line-feed` — Haraka's SMTP smuggling defence.
-- The image installs no optional npm packages: Haraka's bundled plugins are unused, and without `@msimerson/stun` Haraka does not query Google's STUN servers for its public IP (`route_mx` recognises our own MX from `config/me`).
+- The image installs no optional npm packages: Haraka's bundled plugins are unused, and without `@msimerson/stun` Haraka does not query Google's STUN servers for its public IP (`route_mx` recognises our own MX from `config/me`; the IP is declared as `public_ip` in `config/smtp.ini`).
+- Logs never contain the real address of an alias's recipient (`queue.forward` names it `recipient 1/2`), except Haraka's own outbound lines for a failed delivery. Compose keeps them with Docker's `local` driver, rotated at 5 × 20 MB.
 
 Health check:
 ```bash

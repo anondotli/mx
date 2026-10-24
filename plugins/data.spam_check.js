@@ -30,19 +30,17 @@ exports.spam_check = function (next, connection) {
     const auth = txn.notes.mailauth;
     if (!auth) return next();
 
-    // DMARC reject
+    // DMARC reject: refused here, as a direct delivery would be at the
+    // recipient's provider. Forwarded, it would bounce there unseen (the DSN is
+    // suppressed) — queue.forward only rewrites From for mail that passed.
     if (auth.dmarc?.status?.result === 'fail' && auth.dmarc?.policy === 'reject') {
-        if (txn.notes.alias) {
-            this.loginfo(`DMARC reject on alias, flagging: ${txn.mail_from.address}`);
-            txn.add_header('X-Spam-Flag', 'YES');
-            txn.add_header('X-Spam-Reason', 'DMARC fail (policy=reject)');
-        } else {
-            this.loginfo(`DMARC reject: ${txn.mail_from.address}`);
-            return next(DENY, 'Message failed DMARC policy (reject)');
-        }
+        this.loginfo(`DMARC reject: ${txn.mail_from.address}`);
+        recordBlocked(this, txn);
+        return next(DENY, 'Message failed DMARC policy (reject)');
     }
 
-    // DMARC quarantine — flag but deliver
+    // DMARC quarantine — flag but deliver; the forward keeps its From, so the
+    // recipient's provider applies the quarantine policy itself
     if (auth.dmarc?.status?.result === 'fail' && auth.dmarc?.policy === 'quarantine') {
         this.loginfo(`DMARC quarantine: ${txn.mail_from.address}`);
         txn.add_header('X-Spam-Flag', 'YES');
