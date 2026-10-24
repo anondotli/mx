@@ -13,7 +13,7 @@ process.env.HARAKA = path.join(__dirname, '../..');
 const config = require(path.join(__dirname, '../../node_modules/haraka-config'));
 
 const connection = config.get('connection.ini', {
-    booleans: ['-main.strict_rfc1869', '+main.smtputf8', '+headers.add_received', '+headers.show_version', '+headers.clean_auth_results'],
+    booleans: ['-main.strict_rfc1869', '-main.postel', '+main.smtputf8', '+headers.add_received', '+headers.show_version', '+headers.clean_auth_results'],
 });
 const smtp = config.get('smtp.ini');
 
@@ -44,7 +44,8 @@ describe('effective Haraka configuration', () => {
     });
 
     it('reads every rate limit from limit.ini', () => {
-        assert.deepEqual(config.get('limit.ini').main, {
+        // haraka-config returns null-prototype sections
+        assert.deepEqual({ ...config.get('limit.ini').main }, {
             rate_limit_window: 60,
             rate_limit_count: 20,
             max_rejected_rcpts: 10,
@@ -53,6 +54,16 @@ describe('effective Haraka configuration', () => {
             catch_all_rate_limit_window: 3600,
             catch_all_rate_limit_count: 30,
         });
+    });
+
+    it('parses envelope addresses strictly (connection.ini [main] postel)', () => {
+        assert.equal(connection.main.postel, false);
+    });
+
+    it('keeps the mailauth settings the npm plugin shipped', () => {
+        const mailauth = config.get('mailauth.yaml');
+        assert.equal(mailauth.dns.maxLookups, 50);
+        assert.equal(mailauth.minBitLength, 1024);
     });
 
     it('enables the expected plugins in order', () => {

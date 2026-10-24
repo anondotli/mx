@@ -9,13 +9,12 @@
     "lint": "eslint plugins/ lib/"
   },
   "dependencies": {
+    "@haraka/email-address": "~3.1.6",
     "@upstash/redis": "^1.39.0",
-    "address-rfc2821": "^2.2.1",
     "address-rfc2822": "^2.2.4",
-    "Haraka": "~3.1.7",
+    "haraka": "~3.3.5",
     "haraka-constants": "^1.0.8",
     "haraka-dsn": "^1.2.1",
-    "haraka-plugin-mailauth": "^1.1.1",
     "iconv": "^3.0.1",
     "mailauth": "^4.13.3",
     "openpgp": "^6.3.2",

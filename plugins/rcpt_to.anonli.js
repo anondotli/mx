@@ -52,9 +52,9 @@ exports.check_alias = async function (next, connection, params) {
     if (!txn) return next();
 
     const rcpt = params[0];
-    if (!rcpt?.address()) return next(DENY, 'Invalid address');
+    if (!rcpt?.address) return next(DENY, 'Invalid address');
 
-    const email = rcpt.address().toLowerCase();
+    const email = rcpt.address.toLowerCase();
 
     // Ignore replies (handled by other plugin)
     if (email.endsWith(`@${REPLY_DOMAIN}`)) return next();

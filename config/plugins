@@ -4,7 +4,7 @@ tls
 limit-upstash
 
 # == SPF/DKIM/DMARC Checks (Incoming) ==
-# 'haraka-plugin-mailauth' covers all authentication checks
+# plugins/mailauth.js (vendored haraka-plugin-mailauth) covers all authentication checks
 mailauth
 
 # == Recipient Validation ==

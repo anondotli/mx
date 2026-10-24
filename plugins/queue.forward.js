@@ -1,7 +1,7 @@
 'use strict';
 
 const dns = require('node:dns').promises;
-const Address = require('address-rfc2821').Address;
+const Address = require('@haraka/email-address').Address;
 const srs = require('../lib/srs');
 const pgpEncrypt = require('../lib/pgp-encrypt');
 const pgpMime = require('../lib/pgp-mime');
@@ -48,7 +48,7 @@ const REPLY_HEADER_ALLOWLIST = new Set([
 // SRS-rewrite an envelope sender into @anon.li, falling back to a short
 // server-side bounce token when the SRS local-part would exceed the RFC-5321
 // 64-octet limit. SRS encodes the original address into the local-part, so long
-// ESP/VERP bounce senders overflow it and address-rfc2821 throws — DENYSOFTing
+// ESP/VERP bounce senders overflow it and Haraka's Address throws — DENYSOFTing
 // the entire forward. The returned address is always safe to hand to the Address
 // constructor; over-length senders come back as BNC=<token>@anon.li, which
 // rcpt_to.bounce resolves on the return path. See [[bounce-token]]. A null
@@ -76,7 +76,7 @@ async function relayEnvelope(returnTo) {
 function getOriginalSenderAddress(txn) {
     return firstMailbox(txn?.header?.get('Reply-To'))?.address
         || firstMailbox(txn?.header?.get('From'))?.address
-        || txn?.mail_from?.address()
+        || txn?.mail_from?.address
         || null;
 }
 
@@ -263,7 +263,7 @@ async function forwardToRecipients(plugin, txn, next) {
     const aliasData = txn.notes.alias;
     const aliasEmail = aliasData.email;
     const aliasDomain = domainOf(aliasEmail);
-    const sender = txn.mail_from?.address() || null;
+    const sender = txn.mail_from?.address || null;
     const originalSender = getOriginalSenderAddress(txn);
 
     // Rewrite the envelope sender using SRS (or a short bounce token when the
@@ -322,10 +322,10 @@ async function forwardToRecipients(plugin, txn, next) {
         try {
             const { encrypted, message } = await buildCopy(plugin, target, { raw, headers, fromFor });
             await queueRawMessage({ uuid: `${txn.uuid}-${index + 1}`, from, to: target.to, raw: message, notes });
-            plugin.loginfo(`${encrypted ? 'PGP/MIME encrypted and sent' : 'Forwarded'} to ${target.to.address()}`);
+            plugin.loginfo(`${encrypted ? 'PGP/MIME encrypted and sent' : 'Forwarded'} to ${target.to.address}`);
         } catch (err) {
             failed++;
-            plugin.logerror(`Queueing the copy of ${txn.uuid} for ${target.to.address()} failed: ${err.message}`);
+            plugin.logerror(`Queueing the copy of ${txn.uuid} for ${target.to.address} failed: ${err.message}`);
         }
     }
     if (failed > 0) {
@@ -441,7 +441,7 @@ async function relayBounce(plugin, txn, next) {
 async function relayToPurelymail(plugin, txn, next) {
     txn.notes.purelymail_mx = true;
     txn.rcpt_to = [new Address(txn.notes.purelymail_recipient)]; // a repeated RCPT is delivered once
-    const sender = txn.mail_from?.address() || null;
+    const sender = txn.mail_from?.address || null;
     if (sender) {
         // A stateless SRS return path: anyone can mail a reserved address, so
         // nothing is stored per message. A rejection by Purelymail is reported

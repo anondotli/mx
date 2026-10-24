@@ -29,7 +29,7 @@ describe('reply-token', () => {
         assert.ok(Buffer.byteLength(token, 'utf8') <= 64, `token is ${token.length} octets`);
 
         // And the parser that rejected the old design must accept it now.
-        const { Address } = require('address-rfc2821');
+        const { Address } = require('@haraka/email-address');
         assert.doesNotThrow(() => new Address(`<${token}@reply.anon.li>`));
     });
 

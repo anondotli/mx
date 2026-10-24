@@ -1,6 +1,6 @@
 'use strict';
 
-const { Address } = require('address-rfc2821');
+const { Address } = require('@haraka/email-address');
 const db = require('../lib/db');
 const rcptPolicy = require('../lib/rcpt-policy');
 const replyToken = require('../lib/reply-token');
@@ -9,7 +9,7 @@ const { domainOf, sameMailbox, firstMailbox } = require('../lib/address');
 
 exports.register = function () {
     this.register_hook('rcpt', 'check_reply_token');
-    // After haraka-plugin-mailauth's data_post (earlier in config/plugins)
+    // After mailauth's data_post (earlier in config/plugins)
     this.register_hook('data_post', 'check_reply_sender');
 };
 
@@ -17,7 +17,7 @@ exports.check_reply_token = async function (next, connection, params) {
     const txn = connection.transaction;
     if (!txn) return next();
 
-    const email = params[0]?.address();
+    const email = params[0]?.address;
     if (!email || !email.toLowerCase().endsWith(`@${REPLY_DOMAIN}`)) return next();
 
     // One recipient per transaction (lib/rcpt-policy.js)
@@ -78,7 +78,7 @@ function authenticatedSenders(txn) {
     const auth = txn.notes.mailauth || {};
     const senders = [];
 
-    const envelope = txn.mail_from?.address() || '';
+    const envelope = txn.mail_from?.address || '';
     if (envelope && auth.spf?.status?.result === 'pass') senders.push(envelope);
 
     const from = firstMailbox(txn.header.get('From'))?.address;
@@ -107,7 +107,7 @@ exports.check_reply_sender = async function (next, connection) {
         if (!spf || spf.error || spf.status?.result === 'temperror') {
             return next(DENYSOFT, 'Could not verify the sender, please retry');
         }
-        this.loginfo(`Unauthenticated reply to ${reply.aliasEmail} from <${txn.mail_from?.address() || ''}> refused`);
+        this.loginfo(`Unauthenticated reply to ${reply.aliasEmail} from <${txn.mail_from?.address || ''}> refused`);
         return next(DENY, 'Replies must come from your own mailbox (SPF/DKIM did not verify)');
     }
 

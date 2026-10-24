@@ -29,7 +29,7 @@ describe('bounce-token', () => {
         );
 
         // The parser that rejected the over-length SRS address must accept this.
-        const { Address } = require('address-rfc2821');
+        const { Address } = require('@haraka/email-address');
         assert.doesNotThrow(() => new Address(`${localPart}@anon.li`));
     });
 

@@ -15,9 +15,9 @@ exports.check_bounce = async function (next, connection, params) {
     if (!txn) return next();
 
     const rcpt = params[0];
-    if (!rcpt?.address()) return next();
+    if (!rcpt?.address) return next();
 
-    const email = rcpt.address();
+    const email = rcpt.address;
     const parts = splitAddress(email);
     if (!parts) return next();
     const localPart = parts.local;

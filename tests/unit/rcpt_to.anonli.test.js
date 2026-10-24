@@ -23,7 +23,7 @@ describe('rcpt_to.anonli', () => {
     async function rcpt(address, notes = {}) {
         const txn = { notes };
         let result;
-        await plugin.check_alias.call(instance, (code, msg) => { result = { code, msg }; }, { transaction: txn }, [{ address: () => address }]);
+        await plugin.check_alias.call(instance, (code, msg) => { result = { code, msg }; }, { transaction: txn }, [{ address: address }]);
         return { ...result, notes: txn.notes };
     }
 

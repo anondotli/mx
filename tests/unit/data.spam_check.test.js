@@ -14,7 +14,7 @@ function mockConnection(mailauth, notes = {}) {
     return {
         transaction: {
             notes: { mailauth, ...notes },
-            mail_from: { address: () => 'sender@example.com' },
+            mail_from: { address: 'sender@example.com' },
             header: { get: () => '' },
             add_header: () => {},
         },

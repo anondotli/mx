@@ -1,7 +1,4 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": ["plugins/*.js", "lib/*.js", "tests/**/*.test.js"],
-  "ignoreDependencies": [
-    "haraka-plugin-mailauth"
-  ]
+  "entry": ["plugins/*.js", "lib/*.js", "tests/**/*.test.js"]
 }

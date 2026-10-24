@@ -44,7 +44,7 @@ describe('rcpt_to.bounce', () => {
 
     function callPlugin(rcptAddress, notes) {
         const conn = mockConnection(notes);
-        const params = [{ address: () => rcptAddress }];
+        const params = [{ address: rcptAddress }];
         let result;
         plugin.check_bounce.call(
             { loginfo: () => {}, logerror: () => {} },
@@ -59,7 +59,7 @@ describe('rcpt_to.bounce', () => {
     // a later tick — await the hook's returned promise before asserting.
     async function callPluginAsync(rcptAddress, mailFrom) {
         const conn = mockConnection({}, mailFrom);
-        const params = [{ address: () => rcptAddress }];
+        const params = [{ address: rcptAddress }];
         let result;
         await plugin.check_bounce.call(
             { loginfo: () => {}, logerror: () => {} },
@@ -162,7 +162,7 @@ describe('rcpt_to.bounce', () => {
             { loginfo: () => {}, logerror: () => {} },
             () => { called = true; },
             { transaction: null },
-            [{ address: () => 'test@test.com' }]
+            [{ address: 'test@test.com' }]
         );
         assert.ok(called);
     });

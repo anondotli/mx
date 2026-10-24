@@ -2,7 +2,7 @@
 
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { Address } = require('address-rfc2821');
+const { Address } = require('@haraka/email-address');
 const { OK, DENY, DENYSOFT } = require('../helpers/haraka');
 const db = require('../../lib/db');
 const replyToken = require('../../lib/reply-token');
@@ -16,7 +16,7 @@ describe('rcpt_to.reply RCPT', () => {
     async function rcpt(address, notes = {}) {
         const txn = { notes, mail_from: new Address('<me@example.net>') };
         let result;
-        await plugin.check_reply_token.call(instance, (code, msg) => { result = { code, msg }; }, { transaction: txn }, [{ address: () => address }]);
+        await plugin.check_reply_token.call(instance, (code, msg) => { result = { code, msg }; }, { transaction: txn }, [{ address: address }]);
         return { ...result, notes: txn.notes };
     }
 

@@ -6,11 +6,21 @@ RUN apk add --no-cache netcat-openbsd openssl su-exec libstdc++
 # Create app directory
 WORKDIR /etc/haraka
 
+# Haraka generates config/dhparams.pem at startup when it is missing, but the
+# service user cannot write config/, so every boot spawned a failing openssl
+# run. Generate it once here, in its own layer so code and dependency changes
+# keep the cache.
+RUN mkdir -p config && openssl dhparam -out config/dhparams.pem 2048
+
 # Install dependencies from the lockfile. iconv is a native module, so the
-# build toolchain is added and removed in the same layer.
+# build toolchain is added and removed in the same layer. Optional packages are
+# Haraka's bundled plugins (unused: ours are in plugins/) and @msimerson/stun,
+# whose failed public-IP lookup throws an uncaught exception that stops Haraka
+# (a DNS hiccup at the first outbound delivery); route_mx recognises our own
+# MX without it.
 COPY package.json package-lock.json ./
 RUN apk add --no-cache --virtual .build-deps python3 make g++ \
-    && npm ci --omit=dev \
+    && npm ci --omit=dev --omit=optional \
     && npm cache clean --force \
     && apk del .build-deps
 

@@ -4,7 +4,7 @@
 // message stream rather than hand-written stubs.
 
 const path = require('node:path');
-const { Transaction } = require(path.join(__dirname, '../../node_modules/Haraka/transaction'));
+const { Transaction } = require(path.join(__dirname, '../../node_modules/haraka/transaction'));
 
 // Haraka plugin return codes (haraka-constants)
 const codes = { CONT: 900, STOP: 901, DENY: 902, DENYSOFT: 903, DENYDISCONNECT: 904, DENYSOFTDISCONNECT: 905, OK: 906 };

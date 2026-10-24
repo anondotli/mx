@@ -2,7 +2,7 @@
 
 const { describe, it, before, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
-const { Address } = require('address-rfc2821');
+const { Address } = require('@haraka/email-address');
 
 const { OK, DENY, DENYSOFT, receivedTransaction, readStored } = require('../helpers/haraka');
 const queueForward = require('../../plugins/queue.forward');
@@ -18,7 +18,7 @@ describe('queue.forward helpers', () => {
                     }[name] || null;
                 },
             },
-            mail_from: { address: () => 'smtp@example.org' },
+            mail_from: { address: 'smtp@example.org' },
         };
 
         assert.equal(queueForward.getOriginalSenderAddress(txn), 'reply@example.com');
@@ -33,7 +33,7 @@ describe('queue.forward helpers', () => {
                     }[name] || null;
                 },
             },
-            mail_from: { address: () => 'smtp@example.org' },
+            mail_from: { address: 'smtp@example.org' },
         };
 
         assert.equal(queueForward.getOriginalSenderAddress(txn), 'from@example.com');
@@ -49,7 +49,7 @@ describe('queue.forward helpers', () => {
                     }[name] || null;
                 },
             },
-            mail_from: { address: () => 'smtp@example.org' },
+            mail_from: { address: 'smtp@example.org' },
         };
 
         assert.equal(queueForward.getOriginalSenderAddress(txn), 'smtp@example.org');
@@ -304,7 +304,7 @@ describe('queue.forward preserves the full body when rewriting headers', () => {
 const path = require('node:path');
 const bounceToken = require('../../lib/bounce-token');
 const replyToken = require('../../lib/reply-token');
-const harakaTransaction = require(path.join(__dirname, '../../node_modules/Haraka/transaction'));
+const harakaTransaction = require(path.join(__dirname, '../../node_modules/haraka/transaction'));
 const db = require('../../lib/db');
 
 // No database in unit tests: alias stats are fire-and-forget.
@@ -406,8 +406,8 @@ describe('queue.forward forward mode', () => {
 
         assert.equal((await run(txn)).code, OK);
         const copy = queued[0];
-        assert.match(copy.mail_from.address(), /^SRS0=.*@anon\.li$/);
-        assert.equal(copy.rcpt_to[0].address(), 'me@example.net');
+        assert.match(copy.mail_from.address, /^SRS0=.*@anon\.li$/);
+        assert.equal(copy.rcpt_to[0].address, 'me@example.net');
         assert.deepEqual(copy.notes.forward, { aliasId: 'alias-1', aliasEmail: 'shop@anon.li' });
         assert.equal(copy.notes.dkim_domain, undefined);
 
@@ -503,7 +503,7 @@ describe('queue.forward forward mode', () => {
         });
 
         assert.equal((await run(txn)).code, OK);
-        assert.deepEqual(queued.map(t => t.rcpt_to[0].address()), ['me@example.net']);
+        assert.deepEqual(queued.map(t => t.rcpt_to[0].address), ['me@example.net']);
         assert.equal(logs.error.length, 1);
         assert.match(logs.error[0], /invalid recipient address <not a valid address>/);
     });
@@ -548,7 +548,7 @@ describe('queue.forward forward mode', () => {
             mailFrom: new Address('news@shop.example'),
         });
         assert.equal((await run(txn)).code, OK);
-        assert.deepEqual(queued.map(q => q.rcpt_to[0].address()), ['me@example.net']);
+        assert.deepEqual(queued.map(q => q.rcpt_to[0].address), ['me@example.net']);
         assert.match(logs.error.join('\n'), /alias domains cannot be recipients/);
     });
 
@@ -556,7 +556,7 @@ describe('queue.forward forward mode', () => {
         const { outbound, run } = setup();
         const realSend = outbound.send_trans_email;
         outbound.send_trans_email = (txn, next) => {
-            if (txn.rcpt_to[0].address() === 'b@example.net') return next(DENYSOFT, 'disk full');
+            if (txn.rcpt_to[0].address === 'b@example.net') return next(DENYSOFT, 'disk full');
             return realSend(txn, next);
         };
         const txn = await receivedTransaction(inbound('Hello\r\n'), {
@@ -614,7 +614,7 @@ describe('queue.forward PGP copies', () => {
         });
 
         assert.equal((await run(txn)).code, OK);
-        const byRcpt = Object.fromEntries(queued.map(q => [q.rcpt_to[0].address(), q]));
+        const byRcpt = Object.fromEntries(queued.map(q => [q.rcpt_to[0].address, q]));
 
         const encrypted = (await readStored(byRcpt['me@example.net'])).toString('utf8');
         assert.match(encrypted, /multipart\/encrypted/);
@@ -684,8 +684,8 @@ describe('queue.forward reply mode', () => {
         assert.match(head, /^In-Reply-To: <m1@shop\.example>$/m);
         assert.match(head, /^Content-Type: text\/plain; charset=utf-8$/m);
 
-        assert.equal(sent.rcpt_to[0].address(), 'news@shop.example');
-        const envelope = sent.mail_from.address();
+        assert.equal(sent.rcpt_to[0].address, 'news@shop.example');
+        const envelope = sent.mail_from.address;
         assert.ok(envelope.startsWith(bounceToken.ADDRESS_PREFIX));
         const bounce = await bounceToken.decode(envelope.split('@')[0].slice(bounceToken.ADDRESS_PREFIX.length));
         assert.deepEqual(bounce, { originalSender: 'shop@anon.li', relay: true },
@@ -775,7 +775,7 @@ describe('queue.forward bounce mode', () => {
         await run(txn);
         assert.equal(queued.length, 1);
         assert.equal(queued[0].mail_from.isNull(), true);
-        assert.equal(queued[0].rcpt_to[0].address(), 'shop@anon.li');
+        assert.equal(queued[0].rcpt_to[0].address, 'shop@anon.li');
     });
 });
 
@@ -802,8 +802,8 @@ describe('queue.forward Purelymail relay', () => {
         const relayed = queued[0];
         assert.equal(relayed.notes.purelymail_mx, true);
         assert.equal(relayed.notes.purelymail_original_sender, 'sender@example.com');
-        assert.match(relayed.mail_from.address(), /^SRS0=.*@anon\.li$/);
-        assert.deepEqual(relayed.rcpt_to.map(r => r.address()), ['hi@anon.li']);
+        assert.match(relayed.mail_from.address, /^SRS0=.*@anon\.li$/);
+        assert.deepEqual(relayed.rcpt_to.map(r => r.address), ['hi@anon.li']);
     });
 
     it('uses a short bounce token for long ESP senders before relaying to Purelymail', async () => {
@@ -815,7 +815,7 @@ describe('queue.forward Purelymail relay', () => {
         });
 
         assert.equal((await run(txn)).code, OK);
-        const env = queued[0].mail_from.address();
+        const env = queued[0].mail_from.address;
         assert.ok(env.startsWith(bounceToken.ADDRESS_PREFIX));
         assert.ok(Buffer.byteLength(env.split('@')[0], 'utf8') <= 64);
         const decoded = await bounceToken.decode(env.split('@')[0].slice(bounceToken.ADDRESS_PREFIX.length));
@@ -853,20 +853,57 @@ describe('queue.forward outbound bounce hook', () => {
     it('sends DSNs for replies straight to the alias', () => {
         const { code, hmail } = bounceWith({ reply: { aliasEmail: 'shop@anon.li', recipientEmail: 'me@example.net' } });
         assert.equal(code, undefined);
-        assert.equal(hmail.todo.mail_from.address(), 'shop@anon.li');
+        assert.equal(hmail.todo.mail_from.address, 'shop@anon.li');
     });
 
     it('sends Purelymail relay DSNs straight to the original sender, and none for null senders', () => {
         const relayed = bounceWith({ purelymail_relay: true, purelymail_original_sender: 'someone@example.com' });
         assert.equal(relayed.code, undefined);
-        assert.equal(relayed.hmail.todo.mail_from.address(), 'someone@example.com');
+        assert.equal(relayed.hmail.todo.mail_from.address, 'someone@example.com');
         assert.equal(bounceWith({ purelymail_relay: true }).code, OK);
     });
 
     it('leaves other bounces to Haraka', () => {
         const { code, hmail } = bounceWith({});
         assert.equal(code, undefined);
-        assert.match(hmail.todo.mail_from.address(), /^SRS0=/);
+        assert.match(hmail.todo.mail_from.address, /^SRS0=/);
+    });
+});
+
+// Haraka core reads envelope addresses as @haraka/email-address objects
+// (`address` is a getter). An address from another library would reach the
+// queue file, the SMTP envelope and DSNs as its method's source text.
+describe('queue.forward envelope addresses are Haraka\'s own class', () => {
+    beforeEach(() => {
+        process.env.MAIL_API_SECRET = 'secret';
+    });
+
+    const assertHarakaAddresses = (txn) => {
+        assert.ok(txn.mail_from instanceof Address, 'mail_from');
+        for (const rcpt of txn.rcpt_to) assert.ok(rcpt instanceof Address, 'rcpt_to');
+    };
+    const modes = {
+        forward: { notes: { alias: alias([{ email: 'me@example.net', pgpPublicKey: null }]) }, mailFrom: 'news@shop.example' },
+        reply: { notes: { reply: { originalSender: 'news@shop.example', aliasEmail: 'shop@anon.li', recipientEmail: 'me@example.net' } }, mailFrom: 'me@example.net' },
+        'bounce relay': { notes: { bounce: { originalSender: 'shop@anon.li', relay: true } }, mailFrom: '<>' },
+        'Purelymail relay': { notes: { purelymail_relay: true, purelymail_recipient: 'hi@anon.li' }, mailFrom: 'sender@example.com' },
+    };
+
+    for (const [mode, { notes, mailFrom }] of Object.entries(modes)) {
+        it(`in ${mode} mode`, async () => {
+            const { queued, run } = setup();
+            const txn = await receivedTransaction('Subject: hi\r\n\r\nbody\r\n', { notes, mailFrom: new Address(mailFrom) });
+            assert.equal((await run(txn)).code, OK);
+            assert.equal(queued.length, 1);
+            assertHarakaAddresses(queued[0]);
+        });
+    }
+
+    it('in the DSN return path set by the bounce hook', () => {
+        const hmail = { todo: { notes: { reply: { aliasEmail: 'shop@anon.li' } }, mail_from: new Address('<x@anon.li>') } };
+        queueForward.handle_bounce.call({ loginfo() {} }, () => {}, hmail, new Error('550'));
+        assert.ok(hmail.todo.mail_from instanceof Address);
+        assert.equal(hmail.todo.mail_from.address, 'shop@anon.li');
     });
 });
 
@@ -937,7 +974,7 @@ describe('forwarded copy authentication (queue.forward → arc.sign → dkim.cus
             await new Promise(resolve => dkimCustom.sign_message.call(hookPlugin(dkimCustom), resolve, { transaction: copy }));
 
             const result = await authenticate(await readStored(copy), {
-                resolver, ip: '192.0.2.1', helo: 'mx.anon.li', mta: 'mx.example.net', sender: copy.mail_from.address(),
+                resolver, ip: '192.0.2.1', helo: 'mx.anon.li', mta: 'mx.example.net', sender: copy.mail_from.address,
             });
             assert.equal(result.dkim.results[0].status.result, 'pass', result.dkim.results[0].status.comment);
             assert.equal(result.dkim.results[0].signingDomain, 'anon.li');

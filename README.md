@@ -103,7 +103,7 @@ a restart are rejected).
 |--------|---------|
 | `tls` | STARTTLS (TLS 1.2+) |
 | `limit-upstash` | Per-IP connection rate limiting (IPv6 per /64; Redis + in-memory fallback) and a cap on rejected recipients per connection |
-| `mailauth` | Inbound SPF / DKIM / ARC / DMARC validation |
+| `mailauth` | Inbound SPF / DKIM / ARC / DMARC validation (haraka-plugin-mailauth, vendored for Haraka 3.3) |
 | `rcpt_to.bounce` | Validates SRS and `BNC=` return paths |
 | `rcpt_to.anonli` | Validates aliases and catch-all (direct Postgres) + per-alias rate limiting; creates catch-all aliases at queue time, rate-limited per domain |
 | `rcpt_to.reply` | Resolves reply-token addresses (Redis) and checks the alias may still send |
@@ -195,6 +195,8 @@ Production notes:
 - Docker Compose requests an IPv6-enabled user-defined bridge network for Haraka.
 - Outbound delivery uses Haraka's default dual-stack behavior, which prefers IPv6 when the container has working IPv6 egress.
 - Docker daemon IPv6 settings in `/etc/docker/daemon.json` are optional for this setup. They are only needed if you want to customize Docker's IPv6 address pools or enable IPv6 on the default `bridge` network.
+- Message data with bare line feeds (LF without CR) is refused with `451 Bare line-feed` — Haraka's SMTP smuggling defence.
+- The image installs no optional npm packages: Haraka's bundled plugins are unused, and without `@msimerson/stun` Haraka does not query Google's STUN servers for its public IP (`route_mx` recognises our own MX from `config/me`).
 
 Health check:
 ```bash
